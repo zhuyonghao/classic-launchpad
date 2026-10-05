@@ -24,6 +24,7 @@ func runSmokeTests() async {
         try check(Set(store.apps.map(\.id)).count == store.apps.count, "catalog paths are unique")
         try check(Set(store.apps.map(\.bundleIdentifier)).count == store.apps.count, "bundle identifiers are deduplicated")
         try check(!store.apps.contains { $0.bundleIdentifier == "com.local.ClassicLaunchpad" }, "launcher excludes itself")
+        try check(store.apps[0].icon === store.apps[0].icon, "repeated rendering reuses the same cached icon")
         let appIDs = Set(store.apps.map(\.id))
         func checkLayout(_ label: String) throws {
             let ids = store.items.flatMap(\.appIDs)
@@ -37,10 +38,18 @@ func runSmokeTests() async {
         }
         try check(store.search("zzzz-no-such-application-987654").isEmpty, "empty search results")
         let defaults = store.items
+        let session = LauncherSession()
         let loose = store.items.filter { !$0.isFolder }
         try check(loose.count >= 3, "sufficient standalone applications for layout tests")
         let first = loose[0], second = loose[1], third = loose[2]
-        store.createFolder(sourceID: first.id, targetID: second.id)
+        let payload = LauncherDragPayload(itemID: first.id, folderID: nil)
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let data = try JSONEncoder().encode(payload)
+        pasteboard.setData(data, forType: LauncherIconInteractionView.pasteboardType)
+        let decoded = try JSONDecoder().decode(LauncherDragPayload.self, from: pasteboard.data(forType: LauncherIconInteractionView.pasteboardType)!)
+        try check(session.draggingID == nil, "drop regression starts without shared drag state")
+        try check(LauncherDropActions.onIcon(decoded, target: second, horizontalFraction: 0.5, store: store, session: session), "native pasteboard payload creates folder without shared drag state")
         guard let folder = store.items.first(where: { $0.isFolder && $0.appIDs.contains(first.id) && $0.appIDs.contains(second.id) }) else {
             throw SmokeFailure(message: "folder creation")
         }
@@ -52,6 +61,11 @@ func runSmokeTests() async {
         store.moveApp(third.id, toFolder: folder.id)
         try check(store.items.first(where: { $0.id == folder.id })?.appIDs.count == 3, "move app into folder")
         try checkLayout("moving into a folder preserves uniqueness")
+        session.folderID = folder.id
+        try check(LauncherDropActions.onIcon(LauncherDragPayload(itemID: third.id, folderID: folder.id), target: first, horizontalFraction: 0.5, store: store, session: session), "native drop reorders folder members")
+        let members = store.items.first(where: { $0.id == folder.id })!.appIDs
+        try check(members.firstIndex(of: third.id)! + 1 == members.firstIndex(of: first.id)!, "folder member ordering matches drop")
+        session.folderID = nil
         store.moveAppOutOfFolder(appID: first.id, folderID: folder.id)
         try check(store.items.contains { $0.id == first.id && !$0.isFolder }, "move app out of folder")
         store.moveItem(first.id, before: folder.id)
@@ -61,7 +75,6 @@ func runSmokeTests() async {
         let reload = LauncherStore(automaticallyRefresh: false)
         try check(reload.items == store.items, "layout survives persistence and reload")
 
-        let session = LauncherSession()
         session.columns = 7
         session.rows = 5
         session.turnPage(100, store: store)
@@ -82,6 +95,12 @@ func runSmokeTests() async {
         store.resetLayout()
         try check(store.items.flatMap(\.appIDs) == defaults.flatMap(\.appIDs), "reset restores default ordering")
         try checkLayout("reset preserves every installed app")
+        let last = store.items.last(where: { !$0.isFolder })!
+        let dropTarget = store.items.first(where: { !$0.isFolder })!
+        try check(LauncherDropActions.onIcon(LauncherDragPayload(itemID: last.id, folderID: nil), target: dropTarget, horizontalFraction: 0.5, store: store, session: session), "any two standalone icons can merge, including across pages")
+        try check(store.items.contains { $0.isFolder && Set($0.appIDs) == Set([last.id, dropTarget.id]) }, "merged folder contains exactly both dragged applications")
+        try checkLayout("arbitrary icon merge preserves all apps")
+        store.resetLayout()
         try check(store.errorMessage == nil, "no catalog or persistence errors")
         print("All smoke tests passed.")
     } catch {

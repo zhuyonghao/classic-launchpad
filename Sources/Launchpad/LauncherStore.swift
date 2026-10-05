@@ -9,9 +9,26 @@ struct LauncherApp: Identifiable, Hashable {
     let bundleIdentifier: String
 
     var icon: NSImage {
-        let original = NSWorkspace.shared.icon(forFile: url.path)
+        LauncherIconCache.image(for: url)
+    }
+}
+
+private enum LauncherIconCache {
+    private static let images = NSCache<NSString, NSImage>()
+    private static let lock = NSLock()
+
+    static func image(for url: URL) -> NSImage {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let key = path as NSString
+        // Serialize cache misses so concurrent readers receive the same image.
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = images.object(forKey: key) { return cached }
+
+        let original = NSWorkspace.shared.icon(forFile: path)
         let image = (original.copy() as? NSImage) ?? original
         image.size = NSSize(width: 128, height: 128)
+        images.setObject(image, forKey: key)
         return image
     }
 }

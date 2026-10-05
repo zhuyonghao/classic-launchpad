@@ -45,4 +45,15 @@ open "build/启动台.app"
 
 应用图标的可编辑矢量源文件为 `Scripts/MakeIcon.swift`；运行 `./Scripts/make-icon.sh` 可以重新生成 `Resources/AppIcon.icns`。
 
+需要验证真实鼠标拖放时，运行 `./Scripts/prepare-ui-test.sh`，再打开 `build/启动台测试.app`。它使用独立测试布局、普通窗口和拖放日志，不会改动正式应用的布局；测试产物均位于 Git 忽略的 `build/` 中。
+
+GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试并生成应用 ZIP。推送到 `main`、`codex/` 分支或提交 Pull Request 后自动运行。
+
+## 1.0.1 修复
+
+- 移除悬停导致的整页更新，缓存应用图标，经过图标时不再重复加载所有图标。
+- 使用 AppKit 原生拖放，将拖拽数据直接传给落点；拖到图标中央建立文件夹，左右两侧调整顺序。
+- 原生拖放结束或取消时清理状态，防止误启动应用；保持网格和图标视图稳定。
+- 新增图标缓存、原生粘贴板载荷、任意两个应用合并、文件夹内排序等回归检查。
+
 交互参考：[Apple macOS 15 启动台使用手册](https://support.apple.com/zh-cn/guide/mac-help/mh35840/15.0/mac/15.0)。

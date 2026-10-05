@@ -118,6 +118,7 @@ final class LauncherSession: ObservableObject {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private let isUITest = ProcessInfo.processInfo.environment["CLASSIC_LAUNCHPAD_UI_TEST"] == "1"
     let store = LauncherStore()
     let session = LauncherSession()
     var window: LauncherWindow!
@@ -133,8 +134,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         makeMenus()
         window = LauncherWindow(contentRect: NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1280, height: 800),
-                                styleMask: [.borderless], backing: .buffered, defer: false)
-        window.title = "启动台"
+                                styleMask: isUITest ? [.titled, .closable, .resizable] : [.borderless], backing: .buffered, defer: false)
+        window.title = isUITest ? "启动台（界面测试）" : "启动台"
         window.isReleasedWhenClosed = false
         window.isOpaque = true
         window.backgroundColor = .black
@@ -145,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = NSHostingView(rootView: LauncherView(store: store, session: session))
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window.isKeyWindow, NSApp.modalWindow == nil else { return event }
+            if self.session.draggingID != nil { return event }
             // Folder title editing uses standard text-field commands.
             if let field = self.window.firstResponder as? NSTextView,
                (field.delegate as? NSTextField)?.identifier?.rawValue == "folderName" { return event }
@@ -171,9 +173,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return nil
         }
-        hotKey = GlobalHotKey { [weak self] in self?.toggleLauncher() }
-        if hotKey?.registered != true {
-            store.errorMessage = "⌥⌘L 已被其他应用占用。你仍可从程序坞或菜单栏打开启动台。"
+        if !isUITest {
+            hotKey = GlobalHotKey { [weak self] in self?.toggleLauncher() }
+            if hotKey?.registered != true {
+                store.errorMessage = "⌥⌘L 已被其他应用占用。你仍可从程序坞或菜单栏打开启动台。"
+            }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         showLauncher()
@@ -190,6 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidResignActive(_ notification: Notification) {
+        if isUITest { return }
         guard NSApp.modalWindow == nil else { return }
         hideLauncher()
     }
@@ -208,7 +213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main
         if let screen {
-            window.setFrame(screen.frame, display: true)
+            let frame = isUITest ? NSRect(x: screen.visibleFrame.midX - 510, y: screen.visibleFrame.midY - 355, width: 1020, height: 710) : screen.frame
+            window.setFrame(frame, display: true)
             if let url = NSWorkspace.shared.desktopImageURL(for: screen),
                let wallpaper = NSImage(contentsOf: url) { session.wallpaper = wallpaper }
         }
@@ -218,8 +224,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         session.draggingID = nil
         session.page = 0
         session.activationID = UUID()
-        if previousPresentation == nil { previousPresentation = NSApp.presentationOptions }
-        NSApp.presentationOptions = [.autoHideMenuBar, .autoHideDock]
+        if !isUITest {
+            if previousPresentation == nil { previousPresentation = NSApp.presentationOptions }
+            NSApp.presentationOptions = [.autoHideMenuBar, .autoHideDock]
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         store.refresh()
@@ -263,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: "1.0.0",
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.1",
             .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
