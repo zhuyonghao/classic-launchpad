@@ -16,6 +16,8 @@ func runSmokeTests() async {
             print("PASS \(description)")
         }
 
+        try runFourFingerGestureTests()
+
         let store = LauncherStore()
         let deadline = Date().addingTimeInterval(30)
         while store.isScanning && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }

@@ -127,6 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var scrollMonitor: Any?
     var mouseMonitor: Any?
     var hotKey: GlobalHotKey?
+    private var gestureMonitor: TrackpadGestureMonitor?
+    private var gestureMenuItems: [NSMenuItem] = []
+    private var gestureStatusItems: [NSMenuItem] = []
     private var scrollDistance: CGFloat = 0
     private var lastPageTurn = Date.distantPast
     private var previousPresentation: NSApplication.PresentationOptions?
@@ -178,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if hotKey?.registered != true {
                 store.errorMessage = "⌥⌘L 已被其他应用占用。你仍可从程序坞或菜单栏打开启动台。"
             }
+            configureTrackpadGestures()
         }
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         showLauncher()
@@ -202,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        gestureMonitor?.invalidate()
         restorePresentation()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
@@ -250,6 +255,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if window?.isVisible == true && NSApp.isActive { hideLauncher() } else { showLauncher() }
     }
 
+    private func configureTrackpadGestures() {
+        UserDefaults.standard.register(defaults: ["fourFingerGesturesEnabled": true])
+        let monitor = TrackpadGestureMonitor()
+        monitor.isSuspended = { [weak self] in
+            NSApp.modalWindow != nil || self?.session.draggingID != nil || NSEvent.pressedMouseButtons != 0
+        }
+        monitor.onGesture = { [weak self] gesture in
+            guard let self else { return }
+            switch gesture {
+            case .pinchIn:
+                if self.window?.isVisible != true || !NSApp.isActive { self.showLauncher() }
+            case .spreadOut:
+                if self.window?.isVisible == true { self.hideLauncher() }
+            }
+        }
+        monitor.onStatusChanged = { [weak self] status in
+            for item in self?.gestureStatusItems ?? [] { item.title = status.title }
+        }
+        gestureMonitor = monitor
+        monitor.setEnabled(UserDefaults.standard.bool(forKey: "fourFingerGesturesEnabled"))
+        updateGestureMenuState()
+    }
+
+    @objc private func toggleTrackpadGestures() {
+        guard let gestureMonitor else { return }
+        let enabled = !gestureMonitor.isEnabled
+        UserDefaults.standard.set(enabled, forKey: "fourFingerGesturesEnabled")
+        gestureMonitor.setEnabled(enabled)
+        updateGestureMenuState()
+    }
+
+    private func updateGestureMenuState() {
+        for item in gestureMenuItems { item.state = gestureMonitor?.isEnabled == true ? .on : .off }
+    }
+
+    @objc private func showGestureHelp() {
+        let alert = NSAlert()
+        alert.messageText = "四指触控板手势"
+        alert.informativeText = "四指捏合打开启动台，四指张开收起启动台。收起后程序会继续运行，下次仍可用手势打开。\n\n如果同时触发系统界面，请在“系统设置 → 触控板 → 更多手势”中关闭同样使用四指的“启动台/应用”和“显示桌面”（名称因系统版本而异）。\n\n需要内建触控板或 Magic Trackpad。菜单中的状态可查看是否检测到触控板。"
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+
+    private func addGestureMenu(to menu: NSMenu) {
+        let toggle = menu.addItem(withTitle: "启用四指手势", action: #selector(toggleTrackpadGestures), keyEquivalent: "")
+        toggle.target = self
+        toggle.isEnabled = !isUITest
+        gestureMenuItems.append(toggle)
+        let status = menu.addItem(withTitle: isUITest ? "四指手势：测试窗口不监听" : "四指手势：正在连接", action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        gestureStatusItems.append(status)
+        menu.addItem(withTitle: "四指手势使用说明…", action: #selector(showGestureHelp), keyEquivalent: "").target = self
+    }
+
     @objc func screenChanged() {
         if window?.isVisible == true { showLauncher() }
     }
@@ -271,8 +330,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.1",
-            .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.0",
+            .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
         NSApp.activate(ignoringOtherApps: true)
@@ -285,6 +344,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "刷新应用", action: #selector(refreshApps), keyEquivalent: "r")
         appMenu.addItem(withTitle: "还原布局…", action: #selector(resetLayout), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        addGestureMenu(to: appMenu)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏启动台", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "退出启动台", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -305,11 +366,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem?.button?.image = NSImage(systemSymbolName: "square.grid.3x3.fill", accessibilityDescription: "启动台")
-        statusItem?.button?.toolTip = "启动台 · ⌥⌘L"
+        statusItem?.button?.toolTip = "启动台 · 四指捏合 / ⌥⌘L"
         let menu = NSMenu()
         let show = menu.addItem(withTitle: "显示启动台", action: #selector(showLauncher), keyEquivalent: "l")
         show.keyEquivalentModifierMask = [.option, .command]
         show.target = self
+        menu.addItem(.separator())
+        addGestureMenu(to: menu)
         menu.addItem(.separator())
         menu.addItem(withTitle: "刷新应用", action: #selector(refreshApps), keyEquivalent: "").target = self
         menu.addItem(withTitle: "还原布局…", action: #selector(resetLayout), keyEquivalent: "").target = self

@@ -48,7 +48,7 @@ struct LauncherView: View {
                     }
                     Spacer(minLength: 18)
                     pageDots
-                    Text(session.showsHint ? "左右轻扫或按 ⌘ ← → 翻页" : " ")
+                    Text(session.showsHint ? "四指张开收起 · 左右轻扫或按 ⌘ ← → 翻页" : " ")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.45))
                         .padding(.top, 13)
