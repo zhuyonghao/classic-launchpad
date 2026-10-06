@@ -162,7 +162,7 @@ struct LauncherView: View {
         return HStack(alignment: .top, spacing: 0) {
             ForEach(0..<pageCount, id: \.self) { page in
                 appGrid(items: Array(items.dropFirst(page * session.pageSize).prefix(session.pageSize)),
-                        iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                        iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight, page: page, rowCount: rowCount ?? session.rows)
                     .frame(width: width, height: height, alignment: .top)
                     .allowsHitTesting(page == session.page)
                     .accessibilityHidden(page != session.page)
@@ -176,21 +176,32 @@ struct LauncherView: View {
         .clipped()
     }
 
-    private func appGrid(items: [LauncherItem], iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
+    private func appGrid(items: [LauncherItem], iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat, page: Int, rowCount: Int) -> some View {
         VStack(spacing: 0) {
-            ForEach(0..<Int(ceil(Double(items.count) / Double(session.columns))), id: \.self) { row in
+            ForEach(0..<rowCount, id: \.self) { row in
                 HStack(spacing: 0) {
-                    ForEach(Array(items.dropFirst(row * session.columns).prefix(session.columns))) { item in
-                        appTile(item, iconSize: iconSize)
-                            .frame(width: cellWidth, height: rowHeight, alignment: .top)
+                    ForEach(0..<session.columns, id: \.self) { column in
+                        let index = row * session.columns + column
+                        if index < items.count {
+                            appTile(items[index], iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                        } else {
+                            Color.clear.frame(width: cellWidth, height: rowHeight)
+                                .overlay {
+                                    LauncherIconInteraction(id: "", name: "空位", image: NSImage(), sourceFolderID: nil,
+                                        onActivate: {}, onDragStarted: { _ in }, onDragEnded: {},
+                                        canDrop: { _ in session.query.isEmpty || session.folderID != nil },
+                                        onDrop: { payload, _ in
+                                            LauncherDropActions.onSlot(payload, index: page * session.pageSize + index, store: store, session: session)
+                                        }, onTargetChanged: { _ in })
+                                }
+                        }
                     }
-                    Spacer(minLength: 0)
                 }
             }
         }
     }
 
-    private func appTile(_ item: LauncherItem, iconSize: CGFloat) -> some View {
+    private func appTile(_ item: LauncherItem, iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
         let selected = session.selectedID == item.id
         return VStack(spacing: 5) {
             Group {
@@ -212,7 +223,7 @@ struct LauncherView: View {
                 .lineLimit(1).truncationMode(.tail)
                 .padding(.horizontal, 4)
         }
-        .frame(width: iconSize + 45)
+        .frame(width: cellWidth, height: rowHeight, alignment: .top)
         .contentShape(Rectangle())
         .overlay {
             LauncherIconInteraction(
@@ -368,6 +379,22 @@ struct LauncherView: View {
 
 @MainActor
 enum LauncherDropActions {
+    static func onSlot(_ payload: LauncherDragPayload, index: Int, store: LauncherStore, session: LauncherSession) -> Bool {
+        if let folderID = session.folderID {
+            guard payload.folderID == folderID else { return false }
+            return store.moveFolderMember(payload.itemID, to: index, folderID: folderID)
+        }
+        if let folderID = payload.folderID {
+            store.moveAppOutOfFolder(appID: payload.itemID, folderID: folderID)
+        }
+        guard store.items.contains(where: { $0.id == payload.itemID }) else { return false }
+        let remaining = store.items.filter { $0.id != payload.itemID }
+        let destination = min(max(0, index), remaining.count)
+        if destination < remaining.count { store.moveItem(payload.itemID, before: remaining[destination].id) }
+        else { store.moveItemToEnd(payload.itemID) }
+        return true
+    }
+
     /// The native destination supplies the decoded payload; published UI state is
     /// only used to draw feedback, never to identify the item being moved.
     static func onIcon(_ payload: LauncherDragPayload, target: LauncherItem,
@@ -378,7 +405,7 @@ enum LauncherDropActions {
         if let sourceFolder = payload.folderID {
             guard store.items.contains(where: { $0.id == sourceFolder && $0.isFolder && $0.appIDs.contains(source) }) else { return false }
             if sourceFolder == session.folderID {
-                store.reorderAppInFolder(sourceID: source, before: target.id, folderID: sourceFolder)
+                store.reorderAppInFolder(sourceID: source, before: target.id, folderID: sourceFolder, after: horizontalFraction > 0.5)
                 return true
             }
             store.moveAppOutOfFolder(appID: source, folderID: sourceFolder)

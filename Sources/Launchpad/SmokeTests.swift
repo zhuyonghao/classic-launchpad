@@ -81,6 +81,9 @@ func runSmokeTests() async {
         try check(LauncherDropActions.onIcon(LauncherDragPayload(itemID: third.id, folderID: folder.id), target: first, horizontalFraction: 0.5, store: store, session: session), "native drop reorders folder members")
         let members = store.items.first(where: { $0.id == folder.id })!.appIDs
         try check(members.firstIndex(of: third.id)! + 1 == members.firstIndex(of: first.id)!, "folder member ordering matches drop")
+        try check(LauncherDropActions.onIcon(LauncherDragPayload(itemID: third.id, folderID: folder.id), target: first, horizontalFraction: 0.9, store: store, session: session), "folder drop accepts placement after target")
+        let reorderedMembers = store.items.first(where: { $0.id == folder.id })!.appIDs
+        try check(reorderedMembers.firstIndex(of: first.id)! + 1 == reorderedMembers.firstIndex(of: third.id)!, "folder right-side drop places source after target")
         session.folderID = nil
         store.moveAppOutOfFolder(appID: first.id, folderID: folder.id)
         try check(store.items.contains { $0.id == first.id && !$0.isFolder }, "move app out of folder")
@@ -111,6 +114,13 @@ func runSmokeTests() async {
         store.resetLayout()
         try check(store.items.flatMap(\.appIDs) == defaults.flatMap(\.appIDs), "reset restores default ordering")
         try checkLayout("reset preserves every installed app")
+        let slotSource = store.items.first(where: { !$0.isFolder })!
+        try check(LauncherDropActions.onSlot(LauncherDragPayload(itemID: slotSource.id, folderID: nil), index: 40, store: store, session: session), "native empty-slot drop accepts cross-page placement")
+        try check(store.items[40].id == slotSource.id, "empty-slot drop uses requested global position")
+        try check(LauncherDropActions.onSlot(LauncherDragPayload(itemID: slotSource.id, folderID: nil), index: 999, store: store, session: session), "trailing empty-slot drop is accepted")
+        try check(store.items.last?.id == slotSource.id, "trailing empty-slot clamps to end without losing apps")
+        try checkLayout("slot placement preserves every app exactly once")
+        store.resetLayout()
         let last = store.items.last(where: { !$0.isFolder })!
         let dropTarget = store.items.first(where: { !$0.isFolder })!
         try check(LauncherDropActions.onIcon(LauncherDragPayload(itemID: last.id, folderID: nil), target: dropTarget, horizontalFraction: 0.5, store: store, session: session), "any two standalone icons can merge, including across pages")

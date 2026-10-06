@@ -81,6 +81,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        guard !itemID.isEmpty else { return }
         if event.modifierFlags.contains(.control) {
             mouseDownEvent = nil
             super.rightMouseDown(with: event)

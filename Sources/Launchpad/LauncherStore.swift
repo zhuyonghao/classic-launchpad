@@ -140,16 +140,26 @@ final class LauncherStore: ObservableObject {
         saveLayout()
     }
 
-    func reorderAppInFolder(sourceID: String, before targetID: String, folderID: String) {
+    func reorderAppInFolder(sourceID: String, before targetID: String, folderID: String, after: Bool = false) {
         guard sourceID != targetID,
               let folderIndex = items.firstIndex(where: { $0.id == folderID && $0.isFolder }),
               let sourceIndex = items[folderIndex].appIDs.firstIndex(of: sourceID),
               items[folderIndex].appIDs.contains(targetID) else { return }
         items[folderIndex].appIDs.remove(at: sourceIndex)
         if let targetIndex = items[folderIndex].appIDs.firstIndex(of: targetID) {
-            items[folderIndex].appIDs.insert(sourceID, at: targetIndex)
+            items[folderIndex].appIDs.insert(sourceID, at: targetIndex + (after ? 1 : 0))
         }
         saveLayout()
+    }
+
+    @discardableResult
+    func moveFolderMember(_ appID: String, to index: Int, folderID: String) -> Bool {
+        guard let folderIndex = items.firstIndex(where: { $0.id == folderID && $0.isFolder }),
+              let sourceIndex = items[folderIndex].appIDs.firstIndex(of: appID) else { return false }
+        items[folderIndex].appIDs.remove(at: sourceIndex)
+        items[folderIndex].appIDs.insert(appID, at: min(max(0, index), items[folderIndex].appIDs.count))
+        saveLayout()
+        return true
     }
 
     func moveItemToEnd(_ sourceID: String) {
