@@ -8,13 +8,21 @@
     <key>CFBundleExecutable</key><string>ClassicLaunchpad</string>
     <key>CFBundleIdentifier</key><string>com.local.ClassicLaunchpad</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.1.7</string>
+    <key>CFBundleVersion</key><string>10</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.local.ClassicLaunchpad.item</string>
+            <key>UTTypeDescription</key><string>启动台图标</string>
+            <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>

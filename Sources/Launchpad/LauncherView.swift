@@ -2,14 +2,12 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-private let launcherItemType = UTType(exportedAs: "com.local.ClassicLaunchpad.item", conformingTo: .plainText)
+private let launcherItemType = UTType(exportedAs: "com.local.ClassicLaunchpad.item", conformingTo: .data)
 
 struct LauncherView: View {
     @ObservedObject var store: LauncherStore
     @ObservedObject var session: LauncherSession
     @FocusState private var searchFocused: Bool
-    @State private var folderName = ""
-    @State private var hoveredID: String?
 
     private var allItems: [LauncherItem] { session.allItems(store) }
     private var pageCount: Int { max(1, Int(ceil(Double(allItems.count) / Double(session.pageSize)))) }
@@ -22,6 +20,7 @@ struct LauncherView: View {
     }
 
     var body: some View {
+        if session.isPresented {
         GeometryReader { geometry in
             let iconSize = min(100.0, max(56.0, (geometry.size.height - 225) / CGFloat(session.rows) - 33))
             let gridWidth = min(1340.0, geometry.size.width - 110)
@@ -45,14 +44,12 @@ struct LauncherView: View {
                         emptyState
                             .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows))
                     } else {
-                        appGrid(iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                        pagedGrid(iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
                             .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows), alignment: .top)
-                            .id(session.page)
-                            .transition(.opacity)
                     }
                     Spacer(minLength: 18)
                     pageDots
-                    Text(session.showsHint ? "左右轻扫或按 ⌘ ← → 翻页" : " ")
+                    Text(session.showsHint ? "四指张开收起 · 左右轻扫或按 ⌘ ← → 翻页" : " ")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.45))
                         .padding(.top, 13)
@@ -60,13 +57,7 @@ struct LauncherView: View {
                         .allowsHitTesting(false)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                HStack {
-                    edgeTarget(-1).frame(width: 36)
-                    Spacer().allowsHitTesting(false)
-                    edgeTarget(1).frame(width: 36)
-                }
-                .allowsHitTesting(session.draggingID != nil)
+                .background { Color.clear.contentShape(Rectangle()).onTapGesture { returnFromBlank() } }
 
                 if let message = store.errorMessage {
                     VStack {
@@ -85,35 +76,46 @@ struct LauncherView: View {
                     }
                 }
             }
+            .overlay(alignment: .leading) {
+                edgeTarget(-1).frame(width: 36).allowsHitTesting(session.draggingID != nil)
+            }
+            .overlay(alignment: .trailing) {
+                edgeTarget(1).frame(width: 36).allowsHitTesting(session.draggingID != nil)
+            }
             .preferredColorScheme(.dark)
-            .animation(pageAnimation, value: session.page)
-            .animation(pageAnimation, value: session.folderID)
             .onAppear { configureGrid(geometry.size); searchFocused = true }
             .onChange(of: geometry.size) { _, size in configureGrid(size) }
         }
-        .onChange(of: session.query) { _, _ in session.page = 0; session.selectedID = nil }
+        .onChange(of: session.query) { _, query in session.page = query.isEmpty ? session.homePage : 0; session.selectedID = nil }
+        .onChange(of: session.page) { _, _ in session.rememberPage() }
         .onChange(of: session.activationID) { _, _ in searchFocused = true }
         .onChange(of: session.folderID) { _, id in
-            folderName = openedFolder?.name ?? ""
             searchFocused = id == nil
         }
         .onChange(of: store.items) { _, items in
             if let id = session.folderID, !items.contains(where: { $0.id == id }) {
                 session.folderID = nil
-                session.page = 0
+                session.page = session.homePage
             }
             session.page = min(session.page, pageCount - 1)
         }
         .task {
-            try? await Task.sleep(for: .seconds(10))
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
             withAnimation { session.showsHint = false }
+        }
+        } else {
+            Color.clear
         }
     }
 
     private func configureGrid(_ size: CGSize) {
-        session.columns = size.width < 900 ? 5 : 7
-        session.rows = size.height < 680 ? 4 : 5
-        session.page = 0
+        let columns = size.width < 900 ? 5 : 7
+        let rows = size.height < 680 ? 4 : 5
+        guard columns != session.columns || rows != session.rows else { return }
+        let firstVisibleIndex = session.page * session.pageSize
+        session.columns = columns
+        session.rows = rows
+        session.page = min(firstVisibleIndex / session.pageSize, pageCount - 1)
     }
 
     private var searchBar: some View {
@@ -141,8 +143,7 @@ struct LauncherView: View {
         ZStack {
             if let image = session.wallpaper {
                 Image(nsImage: image).resizable().scaledToFill()
-                    .frame(width: size.width + 80, height: size.height + 80)
-                    .blur(radius: 30, opaque: true)
+                    .frame(width: size.width, height: size.height)
             } else {
                 LinearGradient(colors: [Color(red: 0.13, green: 0.23, blue: 0.45),
                                         Color(red: 0.36, green: 0.40, blue: 0.59),
@@ -154,23 +155,64 @@ struct LauncherView: View {
                     .blur(radius: 100)
             }
             Color.black.opacity(session.folderID == nil ? 0.24 : 0.44)
-            Rectangle().fill(.ultraThinMaterial).opacity(0.12)
         }
         .frame(width: size.width, height: size.height)
         .clipped()
         .ignoresSafeArea()
     }
 
-    private func appGrid(iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(cellWidth), spacing: 0), count: session.columns), spacing: 0) {
-            ForEach(visibleItems) { item in
-                appTile(item, iconSize: iconSize)
-                    .frame(width: cellWidth, height: rowHeight, alignment: .top)
+    private func returnFromBlank() {
+        if session.folderID != nil { session.escape() }
+        else { session.dismiss() }
+    }
+
+    private func pagedGrid(iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat, rowCount: Int? = nil) -> some View {
+        let items = allItems
+        let width = cellWidth * CGFloat(session.columns)
+        let height = rowHeight * CGFloat(rowCount ?? session.rows)
+        return HStack(alignment: .top, spacing: 0) {
+            ForEach(0..<pageCount, id: \.self) { page in
+                appGrid(items: Array(items.dropFirst(page * session.pageSize).prefix(session.pageSize)),
+                        iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight, page: page, rowCount: rowCount ?? session.rows)
+                    .frame(width: width, height: height, alignment: .top)
+                    .allowsHitTesting(page == session.page)
+                    .accessibilityHidden(page != session.page)
+            }
+        }
+        // Keep native drag surfaces mounted across page changes. Animate only
+        // this translation, not the wallpaper, labels, or application layout.
+        .offset(x: -CGFloat(min(session.page, pageCount - 1)) * width)
+        .animation(pageAnimation, value: session.page)
+        .frame(width: width, height: height, alignment: .leading)
+        .clipped()
+    }
+
+    private func appGrid(items: [LauncherItem], iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat, page: Int, rowCount: Int) -> some View {
+        VStack(spacing: 0) {
+            ForEach(0..<rowCount, id: \.self) { row in
+                HStack(spacing: 0) {
+                    ForEach(0..<session.columns, id: \.self) { column in
+                        let index = row * session.columns + column
+                        if index < items.count {
+                            appTile(items[index], iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                        } else {
+                            Color.clear.frame(width: cellWidth, height: rowHeight)
+                                .overlay {
+                                    LauncherIconInteraction(id: "", name: "空位", image: NSImage(), sourceFolderID: nil,
+                                        onActivate: {}, onDragStarted: { _ in }, onDragEnded: {},
+                                        canDrop: { _ in session.query.isEmpty || session.folderID != nil },
+                                        onDrop: { payload, _ in
+                                            LauncherDropActions.onSlot(payload, index: page * session.pageSize + index, store: store, session: session)
+                                        }, onTargetChanged: { _ in }, onBlankClick: { returnFromBlank() })
+                                }
+                        }
+                    }
+                }
             }
         }
     }
 
-    private func appTile(_ item: LauncherItem, iconSize: CGFloat) -> some View {
+    private func appTile(_ item: LauncherItem, iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
         let selected = session.selectedID == item.id
         return VStack(spacing: 5) {
             Group {
@@ -182,7 +224,6 @@ struct LauncherView: View {
                         .shadow(color: .black.opacity(0.2), radius: 3, y: 4)
                 }
             }
-            .scaleEffect(hoveredID == item.id ? 1.045 : 1)
             .padding(5)
             .background(RoundedRectangle(cornerRadius: 19).fill(.white.opacity(selected ? 0.19 : 0)))
             .overlay(RoundedRectangle(cornerRadius: 19).stroke(.white.opacity(selected ? 0.45 : 0), lineWidth: 1))
@@ -193,21 +234,38 @@ struct LauncherView: View {
                 .lineLimit(1).truncationMode(.tail)
                 .padding(.horizontal, 4)
         }
-        .frame(width: iconSize + 45)
+        .frame(width: cellWidth, height: rowHeight, alignment: .top)
         .contentShape(Rectangle())
-        .onTapGesture { session.activate(item, store: store) }
-        .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hoveredID = inside ? item.id : nil } }
-        .onDrag {
-            session.draggingID = item.id
-            session.dragFolderID = session.folderID
-            let provider = NSItemProvider()
-            provider.registerDataRepresentation(forTypeIdentifier: launcherItemType.identifier, visibility: .ownProcess) { completion in
-                completion(Data(item.id.utf8), nil)
-                return nil
-            }
-            return provider
+        .overlay {
+            LauncherIconInteraction(
+                id: item.id,
+                name: item.name,
+                image: item.isFolder ? NSImage(named: NSImage.folderName)! : (store.app(for: item.id)?.icon ?? NSImage()),
+                sourceFolderID: session.folderID,
+                onActivate: { session.activate(item, store: store) },
+                onDragStarted: { payload in
+                    session.draggingID = payload.itemID
+                    session.dragFolderID = payload.folderID
+                },
+                onDragEnded: {
+                    session.draggingID = nil
+                    session.dragFolderID = nil
+                    session.selectedID = nil
+                },
+                canDrop: { payload in
+                    payload.itemID != item.id && (session.query.isEmpty || session.folderID != nil)
+                },
+                onDrop: { payload, fraction in
+                    LauncherDropActions.onIcon(payload, target: item, horizontalFraction: fraction, store: store, session: session)
+                },
+                onTargetChanged: { targeted in
+                    if targeted { session.selectedID = item.id }
+                    else if session.selectedID == item.id { session.selectedID = nil }
+                },
+                activationSize: NSSize(width: iconSize + 10, height: iconSize + 35),
+                onBlankClick: { returnFromBlank() }
+            )
         }
-        .onDrop(of: [launcherItemType], delegate: IconDrop(target: item, store: store, session: session, width: iconSize + 45))
         .contextMenu {
             if item.isFolder {
                 Button("打开文件夹") { session.activate(item, store: store) }
@@ -257,7 +315,7 @@ struct LauncherView: View {
     }
 
     private func folderPanel(_ folder: LauncherItem, iconSize: CGFloat, gridWidth: CGFloat, rowHeight: CGFloat) -> some View {
-        let visibleRows = max(1, min(session.rows, Int(ceil(Double(visibleItems.count) / Double(session.columns)))))
+        let visibleRows = max(1, min(session.rows, Int(ceil(Double(allItems.count) / Double(session.columns)))))
         let availableHeight = rowHeight * CGFloat(session.rows)
         // The title, spacing, and panel padding also occupy the fixed grid area.
         let folderRowHeight = min(rowHeight, (availableHeight - 92) / CGFloat(visibleRows))
@@ -267,7 +325,7 @@ struct LauncherView: View {
                 Text(folder.name).font(.system(size: 28, weight: .regular)).foregroundStyle(.white)
                     .lineLimit(1).truncationMode(.tail)
             }.buttonStyle(.plain).help("点按以重命名文件夹")
-            appGrid(iconSize: folderIconSize, cellWidth: (gridWidth - 40) / CGFloat(session.columns), rowHeight: folderRowHeight)
+            pagedGrid(iconSize: folderIconSize, cellWidth: (gridWidth - 40) / CGFloat(session.columns), rowHeight: folderRowHeight, rowCount: visibleRows)
                 .frame(width: gridWidth - 40, height: CGFloat(visibleRows) * folderRowHeight, alignment: .top)
         }
         .padding(.horizontal, 20)
@@ -332,39 +390,46 @@ struct LauncherView: View {
     }
 }
 
-private struct IconDrop: DropDelegate {
-    let target: LauncherItem
-    let store: LauncherStore
-    let session: LauncherSession
-    let width: CGFloat
+@MainActor
+enum LauncherDropActions {
+    static func onSlot(_ payload: LauncherDragPayload, index: Int, store: LauncherStore, session: LauncherSession) -> Bool {
+        if let folderID = session.folderID {
+            guard payload.folderID == folderID else { return false }
+            return store.moveFolderMember(payload.itemID, to: index, folderID: folderID)
+        }
+        if let folderID = payload.folderID {
+            store.moveAppOutOfFolder(appID: payload.itemID, folderID: folderID)
+        }
+        guard store.items.contains(where: { $0.id == payload.itemID }) else { return false }
+        let remaining = store.items.filter { $0.id != payload.itemID }
+        let destination = min(max(0, index), remaining.count)
+        if destination < remaining.count { store.moveItem(payload.itemID, before: remaining[destination].id) }
+        else { store.moveItemToEnd(payload.itemID) }
+        return true
+    }
 
-    func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [launcherItemType]) && session.draggingID != nil && session.draggingID != target.id
-            && (session.query.isEmpty || session.folderID != nil)
-    }
-    func dropEntered(info: DropInfo) { session.selectedID = target.id }
-    func dropExited(info: DropInfo) {
-        if session.selectedID == target.id { session.selectedID = nil }
-    }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-    func performDrop(info: DropInfo) -> Bool {
-        guard let source = session.draggingID, source != target.id else { return false }
-        defer { session.draggingID = nil; session.dragFolderID = nil; session.selectedID = nil }
-        if let sourceFolder = session.dragFolderID {
-            // Dropping within a folder preserves membership; dropping outside extracts first.
+    /// The native destination supplies the decoded payload; published UI state is
+    /// only used to draw feedback, never to identify the item being moved.
+    static func onIcon(_ payload: LauncherDragPayload, target: LauncherItem,
+                       horizontalFraction: CGFloat, store: LauncherStore,
+                       session: LauncherSession) -> Bool {
+        let source = payload.itemID
+        guard source != target.id, session.query.isEmpty || session.folderID != nil else { return false }
+        if let sourceFolder = payload.folderID {
+            guard store.items.contains(where: { $0.id == sourceFolder && $0.isFolder && $0.appIDs.contains(source) }) else { return false }
             if sourceFolder == session.folderID {
-                store.reorderAppInFolder(sourceID: source, before: target.id, folderID: sourceFolder)
+                store.reorderAppInFolder(sourceID: source, before: target.id, folderID: sourceFolder, after: horizontalFraction > 0.5)
                 return true
             }
             store.moveAppOutOfFolder(appID: source, folderID: sourceFolder)
+        } else {
+            guard store.items.contains(where: { $0.id == source }) else { return false }
         }
         if let folderID = session.folderID {
             store.moveApp(source, toFolder: folderID)
-        } else if !session.query.isEmpty {
-            return false
-        } else if info.location.x < width * 0.25 {
+        } else if horizontalFraction < 0.25 {
             store.moveItem(source, before: target.id)
-        } else if info.location.x > width * 0.75 {
+        } else if horizontalFraction > 0.75 {
             store.moveItem(source, after: target.id)
         } else {
             store.createFolder(sourceID: source, targetID: target.id)
@@ -386,7 +451,7 @@ private struct BackgroundDrop: DropDelegate {
         if let folderID = session.dragFolderID {
             store.moveAppOutOfFolder(appID: source, folderID: folderID)
             session.folderID = nil
-            session.page = 0
+            session.page = session.homePage
         } else if session.query.isEmpty {
             // A blank-space drop sends the item to the end of the current page.
             let remaining = store.items.filter { $0.id != source }

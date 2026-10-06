@@ -8,7 +8,9 @@ let package = Package(
         .executable(name: "ClassicLaunchpad", targets: ["ClassicLaunchpad"])
     ],
     targets: [
-        .executableTarget(name: "ClassicLaunchpad", path: "Sources/Launchpad")
+        .target(name: "CMultitouchBridge", path: "Sources/CMultitouchBridge",
+                linkerSettings: [.linkedFramework("CoreFoundation")]),
+        .executableTarget(name: "ClassicLaunchpad", dependencies: ["CMultitouchBridge"], path: "Sources/Launchpad")
     ],
     swiftLanguageVersions: [.v5]
 )

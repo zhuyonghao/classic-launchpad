@@ -9,9 +9,32 @@ struct LauncherApp: Identifiable, Hashable {
     let bundleIdentifier: String
 
     var icon: NSImage {
-        let original = NSWorkspace.shared.icon(forFile: url.path)
-        let image = (original.copy() as? NSImage) ?? original
-        image.size = NSSize(width: 128, height: 128)
+        LauncherIconCache.image(for: url)
+    }
+}
+
+enum LauncherIconCache {
+    private static let images = NSCache<NSString, NSImage>()
+    private static let lock = NSLock()
+
+    static func removeAll() {
+        lock.lock()
+        images.removeAllObjects()
+        lock.unlock()
+    }
+
+    static func image(for url: URL) -> NSImage {
+        let path = url.standardizedFileURL.path
+        let key = path as NSString
+        // Serialize cache misses so concurrent readers receive the same image.
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = images.object(forKey: key) { return cached }
+
+        let original = NSWorkspace.shared.icon(forFile: path)
+        let image = LauncherImageRenderer.rasterize(original, size: NSSize(width: 100, height: 100), pixelScale: 2, fill: false) ?? original
+        images.totalCostLimit = 24 * 1024 * 1024
+        images.setObject(image, forKey: key, cost: 200 * 200 * 4)
         return image
     }
 }
@@ -65,6 +88,9 @@ final class LauncherStore: ObservableObject {
         isScanning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = AppCatalogScanner.scan()
+            // Decode and rasterize every page's icons before publishing the
+            // catalog, rather than doing file/icon work during a page animation.
+            for app in result.apps { autoreleasepool { _ = app.icon } }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.apps = result.apps
@@ -121,16 +147,26 @@ final class LauncherStore: ObservableObject {
         saveLayout()
     }
 
-    func reorderAppInFolder(sourceID: String, before targetID: String, folderID: String) {
+    func reorderAppInFolder(sourceID: String, before targetID: String, folderID: String, after: Bool = false) {
         guard sourceID != targetID,
               let folderIndex = items.firstIndex(where: { $0.id == folderID && $0.isFolder }),
               let sourceIndex = items[folderIndex].appIDs.firstIndex(of: sourceID),
               items[folderIndex].appIDs.contains(targetID) else { return }
         items[folderIndex].appIDs.remove(at: sourceIndex)
         if let targetIndex = items[folderIndex].appIDs.firstIndex(of: targetID) {
-            items[folderIndex].appIDs.insert(sourceID, at: targetIndex)
+            items[folderIndex].appIDs.insert(sourceID, at: targetIndex + (after ? 1 : 0))
         }
         saveLayout()
+    }
+
+    @discardableResult
+    func moveFolderMember(_ appID: String, to index: Int, folderID: String) -> Bool {
+        guard let folderIndex = items.firstIndex(where: { $0.id == folderID && $0.isFolder }),
+              let sourceIndex = items[folderIndex].appIDs.firstIndex(of: appID) else { return false }
+        items[folderIndex].appIDs.remove(at: sourceIndex)
+        items[folderIndex].appIDs.insert(appID, at: min(max(0, index), items[folderIndex].appIDs.count))
+        saveLayout()
+        return true
     }
 
     func moveItemToEnd(_ sourceID: String) {
@@ -280,20 +316,21 @@ private struct PersistedLayout: Codable {
     let items: [LauncherItem]
 }
 
-private enum AppCatalogScanner {
+enum AppCatalogScanner {
     struct Result {
         var apps: [LauncherApp]
         var issue: String?
     }
 
-    static func scan() -> Result {
+    static func scan(roots customRoots: [URL]? = nil) -> Result {
         let fileManager = FileManager.default
         // Earlier roots win if an application is installed in more than one location.
-        let roots = [
+        let roots = customRoots ?? [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true),
             URL(fileURLWithPath: "/System/Applications", isDirectory: true),
-            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true)
+            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true),
+            URL(fileURLWithPath: "/System/Library/CoreServices/Applications", isDirectory: true)
         ]
         var result: [LauncherApp] = []
         var seenPaths = Set<String>()
@@ -304,8 +341,9 @@ private enum AppCatalogScanner {
             let standardized = url.standardizedFileURL
             guard !seenPaths.contains(standardized.path), let bundle = Bundle(url: standardized) else { return }
             let info = bundle.infoDictionary ?? [:]
-            // LSUIElement also identifies user-facing menu-bar utilities, so keep those.
-            guard !isEnabled(info["LSBackgroundOnly"]) else { return }
+            // Installed standalone apps can set both LSBackgroundOnly and
+            // LSUIElement (BetterDisplay). Package boundaries exclude embedded
+            // helpers; these flags must not hide launchable menu-bar utilities.
             // Launchpad itself is a launcher, rather than an application to launch inside it.
             let identifier = bundle.bundleIdentifier ?? standardized.path
             guard identifier != "com.local.ClassicLaunchpad", identifier != "com.apple.launchpad.launcher",
@@ -332,7 +370,7 @@ private enum AppCatalogScanner {
                     addApplication(at: child)
                     continue
                 }
-                guard depth < 3,
+                guard depth < 16,
                       let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]),
                       values.isDirectory == true, values.isSymbolicLink != true, values.isPackage != true else { continue }
                 walk(child, depth: depth + 1)
@@ -340,7 +378,7 @@ private enum AppCatalogScanner {
         }
 
         for root in roots { walk(root, depth: 0) }
-        if !seenBundles.contains("com.apple.Safari") {
+        if customRoots == nil && !seenBundles.contains("com.apple.Safari") {
             addApplication(at: URL(fileURLWithPath: "/System/Cryptexes/App/System/Applications/Safari.app"))
         }
         let preferredOrder = [
@@ -361,11 +399,7 @@ private enum AppCatalogScanner {
         return Result(apps: result, issue: readableRoots == 0 ? "无法读取应用程序文件夹。请检查文件夹权限后重试。" : nil)
     }
 
-    private static func isEnabled(_ value: Any?) -> Bool {
-        if let bool = value as? Bool { return bool }
-        if let string = value as? String { return ["true", "yes", "1"].contains(string.lowercased()) }
-        return false
-    }
+
 }
 
 private enum AppSearch {
