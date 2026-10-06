@@ -28,6 +28,29 @@ final class LauncherWindow: NSWindow {
 final class LauncherSession: ObservableObject {
     @Published var query = ""
     @Published var page = 0
+    private let preferences: UserDefaults
+    private(set) var homePage: Int
+
+    init(preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        homePage = max(0, preferences.integer(forKey: "lastLauncherPage"))
+        page = homePage
+    }
+
+    func rememberPage() {
+        guard folderID == nil, query.isEmpty else { return }
+        homePage = page
+        preferences.set(page, forKey: "lastLauncherPage")
+    }
+
+    func restorePresentation() {
+        query = ""
+        folderID = nil
+        selectedID = nil
+        draggingID = nil
+        dragFolderID = nil
+        page = homePage
+    }
     @Published var folderID: String?
     @Published var selectedID: String?
     @Published var draggingID: String?
@@ -59,6 +82,7 @@ final class LauncherSession: ObservableObject {
 
     func activate(_ item: LauncherItem, store: LauncherStore) {
         if item.isFolder {
+            rememberPage()
             folderID = item.id
             page = 0
             selectedID = nil
@@ -72,7 +96,7 @@ final class LauncherSession: ObservableObject {
         dragFolderID = nil
         if folderID != nil {
             folderID = nil
-            page = 0
+            page = homePage
             selectedID = nil
         } else if !query.isEmpty {
             query = ""
@@ -234,11 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         }
-        session.query = ""
-        session.folderID = nil
-        session.selectedID = nil
-        session.draggingID = nil
-        session.page = 0
+        session.restorePresentation()
         session.activationID = UUID()
         if !isUITest {
             if previousPresentation == nil { previousPresentation = NSApp.presentationOptions }
@@ -250,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hideLauncher() {
+        session.rememberPage()
         window?.orderOut(nil)
         restorePresentation()
         if NSApp.isActive { NSApp.hide(nil) }
@@ -341,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.3",
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.4",
             .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])

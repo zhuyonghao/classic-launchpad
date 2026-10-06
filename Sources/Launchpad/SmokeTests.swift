@@ -54,7 +54,8 @@ func runSmokeTests() async {
         }
         try check(store.search("zzzz-no-such-application-987654").isEmpty, "empty search results")
         let defaults = store.items
-        let session = LauncherSession()
+        let sessionPreferences = UserDefaults(suiteName: "ClassicLaunchpad.Smoke.\(UUID().uuidString)")!
+        let session = LauncherSession(preferences: sessionPreferences)
         let loose = store.items.filter { !$0.isFolder }
         try check(loose.count >= 3, "sufficient standalone applications for layout tests")
         let first = loose[0], second = loose[1], third = loose[2]
@@ -98,6 +99,12 @@ func runSmokeTests() async {
         session.rows = 5
         session.turnPage(100, store: store)
         try check(session.page == max(0, (store.items.count - 1) / 35), "pagination clamps to last page")
+        session.rememberPage()
+        let savedPage = session.page
+        session.restorePresentation()
+        try check(session.page == savedPage, "reopening preserves the last home page")
+        let restartedSession = LauncherSession(preferences: sessionPreferences)
+        try check(restartedSession.page == savedPage, "last home page survives application restart")
         session.turnPage(-100, store: store)
         try check(session.page == 0, "pagination clamps to first page")
         session.activate(store.items.first(where: { $0.id == folder.id })!, store: store)

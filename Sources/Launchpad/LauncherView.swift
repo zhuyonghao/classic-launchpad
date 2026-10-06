@@ -85,7 +85,8 @@ struct LauncherView: View {
             .onAppear { configureGrid(geometry.size); searchFocused = true }
             .onChange(of: geometry.size) { _, size in configureGrid(size) }
         }
-        .onChange(of: session.query) { _, _ in session.page = 0; session.selectedID = nil }
+        .onChange(of: session.query) { _, query in session.page = query.isEmpty ? session.homePage : 0; session.selectedID = nil }
+        .onChange(of: session.page) { _, _ in session.rememberPage() }
         .onChange(of: session.activationID) { _, _ in searchFocused = true }
         .onChange(of: session.folderID) { _, id in
             searchFocused = id == nil
