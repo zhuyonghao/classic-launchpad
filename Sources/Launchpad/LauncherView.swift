@@ -94,7 +94,7 @@ struct LauncherView: View {
         .onChange(of: store.items) { _, items in
             if let id = session.folderID, !items.contains(where: { $0.id == id }) {
                 session.folderID = nil
-                session.page = 0
+                session.page = session.homePage
             }
             session.page = min(session.page, pageCount - 1)
         }
@@ -447,7 +447,7 @@ private struct BackgroundDrop: DropDelegate {
         if let folderID = session.dragFolderID {
             store.moveAppOutOfFolder(appID: source, folderID: folderID)
             session.folderID = nil
-            session.page = 0
+            session.page = session.homePage
         } else if session.query.isEmpty {
             // A blank-space drop sends the item to the end of the current page.
             let remaining = store.items.filter { $0.id != source }

@@ -109,8 +109,10 @@ func runSmokeTests() async {
         try check(session.page == 0, "pagination clamps to first page")
         session.activate(store.items.first(where: { $0.id == folder.id })!, store: store)
         try check(session.folderID == folder.id && session.allItems(store).count == 2, "folder opens with correct contents")
+        let folderHomePage = session.homePage
         session.escape()
         try check(session.folderID == nil, "Escape closes folder first")
+        try check(session.page == folderHomePage, "leaving folder restores the originating home page")
         session.query = "safari"
         session.escape()
         try check(session.query.isEmpty, "Escape clears search")
