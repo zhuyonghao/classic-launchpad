@@ -20,6 +20,7 @@ struct LauncherView: View {
     }
 
     var body: some View {
+        if session.isPresented {
         GeometryReader { geometry in
             let iconSize = min(100.0, max(56.0, (geometry.size.height - 225) / CGFloat(session.rows) - 33))
             let gridWidth = min(1340.0, geometry.size.width - 110)
@@ -99,8 +100,11 @@ struct LauncherView: View {
             session.page = min(session.page, pageCount - 1)
         }
         .task {
-            try? await Task.sleep(for: .seconds(10))
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
             withAnimation { session.showsHint = false }
+        }
+        } else {
+            Color.clear
         }
     }
 

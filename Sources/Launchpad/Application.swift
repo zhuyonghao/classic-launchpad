@@ -26,6 +26,7 @@ final class LauncherWindow: NSWindow {
 
 @MainActor
 final class LauncherSession: ObservableObject {
+    @Published var isPresented = false
     @Published var query = ""
     @Published var page = 0
     private let preferences: UserDefaults
@@ -259,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         session.restorePresentation()
+        session.isPresented = true
         session.activationID = UUID()
         if !isUITest {
             if previousPresentation == nil { previousPresentation = NSApp.presentationOptions }
@@ -272,6 +274,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func hideLauncher() {
         session.rememberPage()
         window?.orderOut(nil)
+        wallpaperRequest = UUID()
+        session.isPresented = false
+        session.wallpaper = nil
         restorePresentation()
         if NSApp.isActive { NSApp.hide(nil) }
     }
