@@ -38,6 +38,13 @@ enum LauncherWallpaperCache {
     private static let lock = NSLock()
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
+    static func removeAll() {
+        lock.lock()
+        images.removeAllObjects()
+        context.clearCaches()
+        lock.unlock()
+    }
+
     static func image(for url: URL, size: NSSize) -> NSImage? {
         let revision = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate?.timeIntervalSince1970 ?? 0
         let key = "\(url.path)|\(revision)|\(Int(size.width))x\(Int(size.height))" as NSString

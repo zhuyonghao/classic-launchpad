@@ -13,9 +13,15 @@ struct LauncherApp: Identifiable, Hashable {
     }
 }
 
-private enum LauncherIconCache {
+enum LauncherIconCache {
     private static let images = NSCache<NSString, NSImage>()
     private static let lock = NSLock()
+
+    static func removeAll() {
+        lock.lock()
+        images.removeAllObjects()
+        lock.unlock()
+    }
 
     static func image(for url: URL) -> NSImage {
         let path = url.standardizedFileURL.path
