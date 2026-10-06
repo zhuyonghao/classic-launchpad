@@ -56,6 +56,7 @@ struct LauncherView: View {
                         .allowsHitTesting(false)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { Color.clear.contentShape(Rectangle()).onTapGesture { returnFromBlank() } }
 
                 if let message = store.errorMessage {
                     VStack {
@@ -155,6 +156,11 @@ struct LauncherView: View {
         .ignoresSafeArea()
     }
 
+    private func returnFromBlank() {
+        if session.folderID != nil { session.escape() }
+        else { session.dismiss() }
+    }
+
     private func pagedGrid(iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat, rowCount: Int? = nil) -> some View {
         let items = allItems
         let width = cellWidth * CGFloat(session.columns)
@@ -192,7 +198,7 @@ struct LauncherView: View {
                                         canDrop: { _ in session.query.isEmpty || session.folderID != nil },
                                         onDrop: { payload, _ in
                                             LauncherDropActions.onSlot(payload, index: page * session.pageSize + index, store: store, session: session)
-                                        }, onTargetChanged: { _ in })
+                                        }, onTargetChanged: { _ in }, onBlankClick: { returnFromBlank() })
                                 }
                         }
                     }
@@ -250,7 +256,9 @@ struct LauncherView: View {
                 onTargetChanged: { targeted in
                     if targeted { session.selectedID = item.id }
                     else if session.selectedID == item.id { session.selectedID = nil }
-                }
+                },
+                activationSize: NSSize(width: iconSize + 45, height: iconSize + 35),
+                onBlankClick: { returnFromBlank() }
             )
         }
         .contextMenu {

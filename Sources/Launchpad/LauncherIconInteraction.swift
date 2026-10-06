@@ -19,6 +19,8 @@ struct LauncherIconInteraction: NSViewRepresentable {
     let canDrop: (LauncherDragPayload) -> Bool
     let onDrop: (LauncherDragPayload, CGFloat) -> Bool
     let onTargetChanged: (Bool) -> Void
+    var activationSize: NSSize? = nil
+    var onBlankClick: () -> Void = {}
 
     func makeNSView(context: Context) -> LauncherIconInteractionView {
         let view = LauncherIconInteractionView(frame: .zero)
@@ -37,12 +39,21 @@ struct LauncherIconInteraction: NSViewRepresentable {
         view.canDrop = canDrop
         view.onDrop = onDrop
         view.onTargetChanged = onTargetChanged
+        view.activationSize = activationSize
+        view.onBlankClick = onBlankClick
         // Mouse-down state and active drag payload deliberately survive updates.
     }
 }
 
 final class LauncherIconInteractionView: NSView, NSDraggingSource {
     static let pasteboardType = NSPasteboard.PasteboardType("com.local.ClassicLaunchpad.item")
+
+    var activationSize: NSSize?
+    var onBlankClick: () -> Void = {}
+    private func isContent(_ point: NSPoint) -> Bool {
+        guard let size = activationSize else { return !itemID.isEmpty }
+        return NSRect(x: (bounds.width - size.width) / 2, y: 0, width: size.width, height: size.height).contains(point)
+    }
 
     var itemID = ""
     var itemName = ""
@@ -81,7 +92,6 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        guard !itemID.isEmpty else { return }
         if event.modifierFlags.contains(.control) {
             mouseDownEvent = nil
             super.rightMouseDown(with: event)
@@ -95,6 +105,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
 
     override func mouseDragged(with event: NSEvent) {
         guard !didDrag, let mouseDownEvent else { return }
+        guard isContent(convert(mouseDownEvent.locationInWindow, from: nil)) else { didDrag = true; return }
         let distance = hypot(event.locationInWindow.x - mouseDownEvent.locationInWindow.x,
                              event.locationInWindow.y - mouseDownEvent.locationInWindow.y)
         guard distance >= 5 else { return }
@@ -130,7 +141,8 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         mouseDownEvent = nil
         if shouldActivate {
             debug("activate")
-            onActivate()
+            if isContent(convert(event.locationInWindow, from: nil)) { onActivate() }
+            else { onBlankClick() }
         }
     }
 
