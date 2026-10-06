@@ -94,3 +94,7 @@ GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试
 ## 1.1.7 待机缓存释放
 
 收起 0.3 秒后清空解码图标与壁纸缓存，重新显示前在后台预加载图标。快速收起再打开会取消旧清理任务，避免误删新的缓存。
+
+## 登录自动启动
+
+本机安装在 `/Applications/启动台.app`。用户 LaunchAgent `com.local.ClassicLaunchpad.login` 在登录时使用 `--background` 启动，保持窗口收起，四指捏合、⌥⌘L 或菜单栏可打开。配置位于 `~/Library/LaunchAgents/com.local.ClassicLaunchpad.login.plist`。
