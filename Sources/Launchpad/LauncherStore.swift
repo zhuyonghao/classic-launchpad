@@ -26,8 +26,9 @@ private enum LauncherIconCache {
         if let cached = images.object(forKey: key) { return cached }
 
         let original = NSWorkspace.shared.icon(forFile: path)
-        let image = LauncherImageRenderer.rasterize(original, size: NSSize(width: 128, height: 128), pixelScale: 2, fill: false) ?? original
-        images.setObject(image, forKey: key)
+        let image = LauncherImageRenderer.rasterize(original, size: NSSize(width: 100, height: 100), pixelScale: 2, fill: false) ?? original
+        images.totalCostLimit = 24 * 1024 * 1024
+        images.setObject(image, forKey: key, cost: 200 * 200 * 4)
         return image
     }
 }
@@ -83,7 +84,7 @@ final class LauncherStore: ObservableObject {
             let result = AppCatalogScanner.scan()
             // Decode and rasterize every page's icons before publishing the
             // catalog, rather than doing file/icon work during a page animation.
-            for app in result.apps { _ = app.icon }
+            for app in result.apps { autoreleasepool { _ = app.icon } }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.apps = result.apps

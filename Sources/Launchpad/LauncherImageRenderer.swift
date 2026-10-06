@@ -1,5 +1,6 @@
 import AppKit
 import CoreImage
+import ImageIO
 
 enum LauncherImageRenderer {
     static func rasterize(_ image: NSImage, size: NSSize, pixelScale: CGFloat, fill: Bool) -> NSImage? {
@@ -35,7 +36,7 @@ enum LauncherImageRenderer {
 enum LauncherWallpaperCache {
     private static let images = NSCache<NSString, NSImage>()
     private static let lock = NSLock()
-    private static let context = CIContext()
+    private static let context = CIContext(options: [.cacheIntermediates: false])
 
     static func image(for url: URL, size: NSSize) -> NSImage? {
         let revision = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate?.timeIntervalSince1970 ?? 0
@@ -43,10 +44,18 @@ enum LauncherWallpaperCache {
         lock.lock()
         defer { lock.unlock() }
         if let image = images.object(forKey: key) { return image }
-        let scale = min(1, 1920 / max(size.width, size.height))
-        guard let original = NSImage(contentsOf: url),
-              let raster = LauncherImageRenderer.rasterize(original, size: size, pixelScale: scale, fill: true),
+        let scale = min(1, 1280 / max(size.width, size.height))
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1280,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else { return nil }
+        let original = NSImage(cgImage: thumbnail, size: .zero)
+        guard let raster = LauncherImageRenderer.rasterize(original, size: size, pixelScale: scale, fill: true),
               let source = (raster.representations.first as? NSBitmapImageRep)?.cgImage else { return nil }
+        defer { context.clearCaches() }
         let input = CIImage(cgImage: source)
         let output = input.clampedToExtent()
             .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 30 * scale])
@@ -57,7 +66,8 @@ enum LauncherWallpaperCache {
         representation.size = size
         result.addRepresentation(representation)
         images.setObject(result, forKey: key, cost: source.width * source.height * 4)
-        images.totalCostLimit = 32 * 1024 * 1024
+        images.countLimit = 1
+        images.totalCostLimit = 8 * 1024 * 1024
         return result
     }
 }

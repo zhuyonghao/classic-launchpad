@@ -40,7 +40,7 @@ func runSmokeTests() async {
         try check(Set(store.apps.map(\.bundleIdentifier)).count == store.apps.count, "bundle identifiers are deduplicated")
         try check(!store.apps.contains { $0.bundleIdentifier == "com.local.ClassicLaunchpad" }, "launcher excludes itself")
         try check(store.apps[0].icon === store.apps[0].icon, "repeated rendering reuses the same cached icon")
-        try check(store.apps[0].icon.representations.first?.pixelsWide == 256, "icons are predecoded Retina bitmaps")
+        try check(store.apps[0].icon.representations.first?.pixelsWide == 200, "icons are predecoded Retina bitmaps")
         let appIDs = Set(store.apps.map(\.id))
         func checkLayout(_ label: String) throws {
             let ids = store.items.flatMap(\.appIDs)

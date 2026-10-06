@@ -86,3 +86,7 @@ GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试
 ## 1.1.5 应用扫描
 
 保留 BetterDisplay 等声明后台模式的独立菜单栏应用，补充 CoreServices/Applications 系统应用目录，并支持更深的应用子目录。扫描不进入应用包，避免显示内嵌辅助程序。
+
+## 1.1.6 内存优化
+
+图标位图调整为 200×200（满足最大 100 点的 Retina 显示），缓存限额 24 MiB。模糊壁纸通过 ImageIO 缩略解码，最长边最多 1280 像素，仅缓存一张，并清理 Core Image 中间缓存。图标预加载逐个释放临时对象，保持原有常驻分页结构。
