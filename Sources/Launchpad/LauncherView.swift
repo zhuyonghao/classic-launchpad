@@ -257,7 +257,7 @@ struct LauncherView: View {
                     if targeted { session.selectedID = item.id }
                     else if session.selectedID == item.id { session.selectedID = nil }
                 },
-                activationSize: NSSize(width: iconSize + 45, height: iconSize + 35),
+                activationSize: NSSize(width: iconSize + 10, height: iconSize + 35),
                 onBlankClick: { returnFromBlank() }
             )
         }
