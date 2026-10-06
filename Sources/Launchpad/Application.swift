@@ -159,7 +159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastPageTurn = Date.distantPast
     private var previousPresentation: NSApplication.PresentationOptions?
     private var wallpaperRequest = UUID()
-    private var presentationRequest = UUID()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         makeMenus()
@@ -260,19 +259,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         }
-        let request = UUID()
-        presentationRequest = request
-        let apps = store.apps
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            for app in apps { autoreleasepool { _ = app.icon } }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.presentationRequest == request else { return }
-                self.presentPreparedLauncher()
-            }
-        }
-    }
-
-    private func presentPreparedLauncher() {
         session.restorePresentation()
         session.isPresented = true
         session.activationID = UUID()
@@ -286,19 +272,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hideLauncher() {
-        presentationRequest = UUID()
         session.rememberPage()
         window?.orderOut(nil)
         wallpaperRequest = UUID()
         session.isPresented = false
         session.wallpaper = nil
-        let cleanupRequest = presentationRequest
-        // Let SwiftUI release image references before evicting decoded caches.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self, !self.session.isPresented, self.presentationRequest == cleanupRequest else { return }
-            LauncherIconCache.removeAll()
-            DispatchQueue.global(qos: .utility).async { LauncherWallpaperCache.removeAll() }
-        }
         restorePresentation()
         if NSApp.isActive { NSApp.hide(nil) }
     }
@@ -389,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.7",
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.6",
             .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
