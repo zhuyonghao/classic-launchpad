@@ -43,7 +43,7 @@ struct LauncherView: View {
                         emptyState
                             .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows))
                     } else {
-                        appGrid(iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                        pagedGrid(iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
                             .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows), alignment: .top)
                     }
                     Spacer(minLength: 18)
@@ -81,8 +81,6 @@ struct LauncherView: View {
                 edgeTarget(1).frame(width: 36).allowsHitTesting(session.draggingID != nil)
             }
             .preferredColorScheme(.dark)
-            .animation(pageAnimation, value: session.page)
-            .animation(pageAnimation, value: session.folderID)
             .onAppear { configureGrid(geometry.size); searchFocused = true }
             .onChange(of: geometry.size) { _, size in configureGrid(size) }
         }
@@ -139,8 +137,7 @@ struct LauncherView: View {
         ZStack {
             if let image = session.wallpaper {
                 Image(nsImage: image).resizable().scaledToFill()
-                    .frame(width: size.width + 80, height: size.height + 80)
-                    .blur(radius: 30, opaque: true)
+                    .frame(width: size.width, height: size.height)
             } else {
                 LinearGradient(colors: [Color(red: 0.13, green: 0.23, blue: 0.45),
                                         Color(red: 0.36, green: 0.40, blue: 0.59),
@@ -152,18 +149,43 @@ struct LauncherView: View {
                     .blur(radius: 100)
             }
             Color.black.opacity(session.folderID == nil ? 0.24 : 0.44)
-            Rectangle().fill(.ultraThinMaterial).opacity(0.12)
         }
         .frame(width: size.width, height: size.height)
         .clipped()
         .ignoresSafeArea()
     }
 
-    private func appGrid(iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(cellWidth), spacing: 0), count: session.columns), spacing: 0) {
-            ForEach(visibleItems) { item in
-                appTile(item, iconSize: iconSize)
-                    .frame(width: cellWidth, height: rowHeight, alignment: .top)
+    private func pagedGrid(iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat, rowCount: Int? = nil) -> some View {
+        let items = allItems
+        let width = cellWidth * CGFloat(session.columns)
+        let height = rowHeight * CGFloat(rowCount ?? session.rows)
+        return HStack(alignment: .top, spacing: 0) {
+            ForEach(0..<pageCount, id: \.self) { page in
+                appGrid(items: Array(items.dropFirst(page * session.pageSize).prefix(session.pageSize)),
+                        iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                    .frame(width: width, height: height, alignment: .top)
+                    .allowsHitTesting(page == session.page)
+                    .accessibilityHidden(page != session.page)
+            }
+        }
+        // Keep native drag surfaces mounted across page changes. Animate only
+        // this translation, not the wallpaper, labels, or application layout.
+        .offset(x: -CGFloat(min(session.page, pageCount - 1)) * width)
+        .animation(pageAnimation, value: session.page)
+        .frame(width: width, height: height, alignment: .leading)
+        .clipped()
+    }
+
+    private func appGrid(items: [LauncherItem], iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            ForEach(0..<Int(ceil(Double(items.count) / Double(session.columns))), id: \.self) { row in
+                HStack(spacing: 0) {
+                    ForEach(Array(items.dropFirst(row * session.columns).prefix(session.columns))) { item in
+                        appTile(item, iconSize: iconSize)
+                            .frame(width: cellWidth, height: rowHeight, alignment: .top)
+                    }
+                    Spacer(minLength: 0)
+                }
             }
         }
     }
@@ -269,7 +291,7 @@ struct LauncherView: View {
     }
 
     private func folderPanel(_ folder: LauncherItem, iconSize: CGFloat, gridWidth: CGFloat, rowHeight: CGFloat) -> some View {
-        let visibleRows = max(1, min(session.rows, Int(ceil(Double(visibleItems.count) / Double(session.columns)))))
+        let visibleRows = max(1, min(session.rows, Int(ceil(Double(allItems.count) / Double(session.columns)))))
         let availableHeight = rowHeight * CGFloat(session.rows)
         // The title, spacing, and panel padding also occupy the fixed grid area.
         let folderRowHeight = min(rowHeight, (availableHeight - 92) / CGFloat(visibleRows))
@@ -279,7 +301,7 @@ struct LauncherView: View {
                 Text(folder.name).font(.system(size: 28, weight: .regular)).foregroundStyle(.white)
                     .lineLimit(1).truncationMode(.tail)
             }.buttonStyle(.plain).help("点按以重命名文件夹")
-            appGrid(iconSize: folderIconSize, cellWidth: (gridWidth - 40) / CGFloat(session.columns), rowHeight: folderRowHeight)
+            pagedGrid(iconSize: folderIconSize, cellWidth: (gridWidth - 40) / CGFloat(session.columns), rowHeight: folderRowHeight, rowCount: visibleRows)
                 .frame(width: gridWidth - 40, height: CGFloat(visibleRows) * folderRowHeight, alignment: .top)
         }
         .padding(.horizontal, 20)

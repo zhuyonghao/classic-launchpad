@@ -18,7 +18,7 @@ private enum LauncherIconCache {
     private static let lock = NSLock()
 
     static func image(for url: URL) -> NSImage {
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let path = url.standardizedFileURL.path
         let key = path as NSString
         // Serialize cache misses so concurrent readers receive the same image.
         lock.lock()
@@ -26,8 +26,7 @@ private enum LauncherIconCache {
         if let cached = images.object(forKey: key) { return cached }
 
         let original = NSWorkspace.shared.icon(forFile: path)
-        let image = (original.copy() as? NSImage) ?? original
-        image.size = NSSize(width: 128, height: 128)
+        let image = LauncherImageRenderer.rasterize(original, size: NSSize(width: 128, height: 128), pixelScale: 2, fill: false) ?? original
         images.setObject(image, forKey: key)
         return image
     }
@@ -82,6 +81,9 @@ final class LauncherStore: ObservableObject {
         isScanning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = AppCatalogScanner.scan()
+            // Decode and rasterize every page's icons before publishing the
+            // catalog, rather than doing file/icon work during a page animation.
+            for app in result.apps { _ = app.icon }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.apps = result.apps

@@ -18,6 +18,19 @@ func runSmokeTests() async {
 
         try runFourFingerGestureTests()
 
+        let sample = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
+                                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                      isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let graphics = NSGraphicsContext(bitmapImageRep: sample)!.cgContext
+        graphics.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.7, alpha: 1))
+        graphics.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        let wallpaperURL = directory.appendingPathComponent("wallpaper.png")
+        try sample.representation(using: .png, properties: [:])!.write(to: wallpaperURL)
+        let wallpaper = LauncherWallpaperCache.image(for: wallpaperURL, size: NSSize(width: 128, height: 80))
+        try check(wallpaper != nil, "wallpaper is prerendered and blurred")
+        try check(wallpaper === LauncherWallpaperCache.image(for: wallpaperURL, size: NSSize(width: 128, height: 80)), "paging reuses cached wallpaper texture")
+        try check(wallpaper?.representations.first?.pixelsWide == 128, "wallpaper texture is bounded to display size")
+
         let store = LauncherStore()
         let deadline = Date().addingTimeInterval(30)
         while store.isScanning && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
@@ -27,6 +40,7 @@ func runSmokeTests() async {
         try check(Set(store.apps.map(\.bundleIdentifier)).count == store.apps.count, "bundle identifiers are deduplicated")
         try check(!store.apps.contains { $0.bundleIdentifier == "com.local.ClassicLaunchpad" }, "launcher excludes itself")
         try check(store.apps[0].icon === store.apps[0].icon, "repeated rendering reuses the same cached icon")
+        try check(store.apps[0].icon.representations.first?.pixelsWide == 256, "icons are predecoded Retina bitmaps")
         let appIDs = Set(store.apps.map(\.id))
         func checkLayout(_ label: String) throws {
             let ids = store.items.flatMap(\.appIDs)
