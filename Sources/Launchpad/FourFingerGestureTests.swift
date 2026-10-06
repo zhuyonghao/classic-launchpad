@@ -99,6 +99,10 @@ func runFourFingerGestureTests() throws {
         recognizer.process(contacts: thumbAnchoredContacts(scale: scale * 0.6), timestamp: Double(index) * 0.04)
     }
     try require(anchoredSpread == [.spreadOut], "stationary-thumb spread rejected legitimate center motion")
+    recognizer.reset()
+    try require(run(&recognizer, scales: pinchScales, step: 0.02) == [.pinchIn], "normal fast pinch was rejected")
+    recognizer.reset()
+    try require(run(&recognizer, scales: spreadScales, step: 0.02) == [.spreadOut], "normal fast spread was rejected")
 
     recognizer.reset()
     let changedIdentity = run(&recognizer, scales: pinchScales) { index, points in
@@ -125,7 +129,7 @@ func runFourFingerGestureTests() throws {
     try require(run(&recognizer, scales: spreadScales, start: 0.64) == [.spreadOut], "all-fingers-up did not rearm")
 
     recognizer.reset()
-    try require(run(&recognizer, scales: [1, 0.98, 0.93, 0.90, 0.89, 0.91, 0.95]).isEmpty, "small scale jitter triggered")
+    try require(run(&recognizer, scales: [1, 0.98, 0.96, 0.95, 0.97, 0.96, 0.99]).isEmpty, "small scale jitter triggered")
     recognizer.reset()
     try require(run(&recognizer, scales: [1, 0.98, 0.94, 0.9, 0.65, 0.95, 1]).isEmpty, "one-frame scale spike triggered")
     recognizer.reset()

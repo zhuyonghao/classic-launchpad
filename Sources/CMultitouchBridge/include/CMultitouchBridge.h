@@ -28,6 +28,9 @@ typedef struct {
     uint64_t frameCount;
     uint64_t rejectedFrameCount;
     uint64_t generation;
+    int32_t maximumRawContactCount;
+    int32_t maximumContactCount;
+    uint32_t rejectionFlags;
 } LPTrackpadDiagnostics;
 
 enum {

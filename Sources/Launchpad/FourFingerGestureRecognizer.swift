@@ -14,9 +14,9 @@ enum FourFingerGesture: Equatable {
 
 /// Pure geometry/state recognition; this type never reads a device or launches an app.
 ///
-/// 四指可在 0.30 秒内依次落下；之后必须保持同一组四个触点。收拢需半径缩小
-/// 22%，张开需增大 25%，并至少改变触控板归一化尺寸的 2.5%。手势至少持续
-/// 0.12 秒、跨越四帧，越过阈值后还需保持 0.035 秒，过滤短暂抖动。
+/// 四指可在 0.30 秒内依次落下；之后必须保持同一组四个触点。收拢/张开需
+/// 半径改变 10%，并至少改变触控板归一化尺寸的 1.2%。手势至少持续
+/// 0.08 秒、跨越四帧，越过阈值后还需保持 0.008 秒，过滤短暂抖动。
 /// 中心漂移容差随收缩/扩张幅度增加，允许以基本固定的拇指为中心捏合。
 /// 旋转超过约 26° 或明显不一致的手指运动会中止识别。
 /// 断帧超过 0.22 秒、身份改变、异常输入或触发后都等待全部抬指才重新开始，
@@ -29,6 +29,14 @@ struct FourFingerGestureRecognizer {
     }
 
     private(set) var diagnostic: Diagnostic = .idle
+    struct Metrics {
+        let elapsed: Double
+        let scale: Double
+        let centerMovement: Double
+        let rotation: Double
+        let shapeError: Double
+    }
+    private(set) var metrics: Metrics?
     private struct Point {
         let x: Double
         let y: Double
@@ -64,6 +72,7 @@ struct FourFingerGestureRecognizer {
         sampleCount = 0
         lockedUntilLift = false
         diagnostic = .idle
+        metrics = nil
     }
 
     mutating func process(contacts: [TrackpadContact], timestamp: TimeInterval) -> FourFingerGesture? {
@@ -129,8 +138,7 @@ struct FourFingerGestureRecognizer {
         // A pinch around a stationary thumb translates the centroid as it
         // changes radius. Translation alone still has only the small allowance.
         let radiusChange = abs(radius - baseline.radius)
-        let centerAllowance = min(0.25, 0.045 + 2 * radiusChange)
-        guard centerMovement <= centerAllowance else {
+        guard centerMovement <= 0.25 else {
             invalidateSequence(.centerDrift)
             return nil
         }
@@ -158,6 +166,8 @@ struct FourFingerGestureRecognizer {
             squaredError += pow(vectors[index].x - fitted.x, 2) + pow(vectors[index].y - fitted.y, 2)
         }
         let shapeError = sqrt(squaredError / 4) / baseline.radius
+        metrics = Metrics(elapsed: elapsed, scale: radius / baseline.radius,
+                          centerMovement: centerMovement, rotation: angle, shapeError: shapeError)
         guard abs(angle) <= 0.45, shapeError <= 0.22 else {
             invalidateSequence(.shapeOrRotation)
             return nil
@@ -166,9 +176,9 @@ struct FourFingerGestureRecognizer {
         let scale = radius / baseline.radius
         let delta = radius - baseline.radius
         let gesture: FourFingerGesture?
-        if scale <= 0.78 && delta <= -0.025 {
+        if scale <= 0.90 && delta <= -0.012 {
             gesture = .pinchIn
-        } else if scale >= 1.25 && delta >= 0.025 {
+        } else if scale >= 1.10 && delta >= 0.012 {
             gesture = .spreadOut
         } else {
             gesture = nil
@@ -176,6 +186,13 @@ struct FourFingerGestureRecognizer {
         guard let gesture else {
             candidate = nil
             diagnostic = .tracking
+            return nil
+        }
+        // Do not reject the early settling phase merely because its center
+        // moves. Evaluate translation only after enough scale change exists.
+        guard centerMovement <= 0.08 + 3 * radiusChange else {
+            candidate = nil
+            diagnostic = .centerDrift
             return nil
         }
         let consistentFingers = zip(baseline.vectors, vectors).filter { old, current in
@@ -191,8 +208,8 @@ struct FourFingerGestureRecognizer {
             candidate = Candidate(gesture: gesture, timestamp: timestamp)
         }
         diagnostic = .candidate
-        guard elapsed >= 0.12, sampleCount >= 4,
-              timestamp - (candidate?.timestamp ?? timestamp) >= 0.035 else { return nil }
+        guard elapsed >= 0.08, sampleCount >= 4,
+              timestamp - (candidate?.timestamp ?? timestamp) >= 0.008 - 1e-9 else { return nil }
         invalidateSequence(.recognized)
         return gesture
     }

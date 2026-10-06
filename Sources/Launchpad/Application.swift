@@ -259,7 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         UserDefaults.standard.register(defaults: ["fourFingerGesturesEnabled": true])
         let monitor = TrackpadGestureMonitor()
         monitor.isSuspended = { [weak self] in
-            NSApp.modalWindow != nil || self?.session.draggingID != nil || NSEvent.pressedMouseButtons != 0
+            NSApp.modalWindow != nil || self?.session.draggingID != nil
         }
         monitor.onGesture = { [weak self] gesture in
             guard let self else { return }

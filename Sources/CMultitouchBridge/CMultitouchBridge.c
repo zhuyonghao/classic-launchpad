@@ -136,19 +136,21 @@ static int receiveFrame(LPDevice device, LPSystemFinger *fingers, int count,
 
     LPTrackpadContact contacts[LPMaxContacts];
     int32_t accepted = 0;
+    uint32_t rejectionFlags = 0;
     bool invalid = count < 0 || count > LPMaxContacts || !isfinite(timestamp) || timestamp < 0 ||
         (count > 0 && fingers == NULL);
+    if (invalid) rejectionFlags |= 1;
     if (!invalid) {
         for (int i = 0; i < count; ++i) {
             const LPSystemFinger *finger = &fingers[i];
-            if (finger->state < 0 || finger->state > 7) { invalid = true; break; }
+            if (finger->state < 0 || finger->state > 7) { invalid = true; rejectionFlags |= 2; break; }
             if (finger->state != 3 && finger->state != 4) continue;
             const double x = finger->normalized.position.x;
             const double y = finger->normalized.position.y;
             if (finger->identifier < 0 || !isfinite(x) || !isfinite(y) ||
-                x < 0 || x > 1 || y < 0 || y > 1) { invalid = true; break; }
+                x < 0 || x > 1 || y < 0 || y > 1) { invalid = true; rejectionFlags |= 4; break; }
             for (int32_t j = 0; j < accepted; ++j) {
-                if (contacts[j].identifier == finger->identifier) { invalid = true; break; }
+                if (contacts[j].identifier == finger->identifier) { invalid = true; rejectionFlags |= 8; break; }
             }
             if (invalid) break;
             contacts[accepted++] = (LPTrackpadContact){finger->identifier, x, y};
@@ -159,6 +161,9 @@ static int receiveFrame(LPDevice device, LPSystemFinger *fingers, int count,
     if (invalid) accepted = -1;
     pthread_mutex_lock(&frameMutex);
     if (invalid) ++diagnostics.rejectedFrameCount;
+    if (count > diagnostics.maximumRawContactCount && count <= LPMaxContacts) diagnostics.maximumRawContactCount = count;
+    if (accepted > diagnostics.maximumContactCount) diagnostics.maximumContactCount = accepted;
+    diagnostics.rejectionFlags |= rejectionFlags;
     const bool deliver = running && source->enabled && consumer == callback;
     pthread_mutex_unlock(&frameMutex);
     if (deliver) callback((uintptr_t)device, accepted > 0 ? contacts : NULL,
@@ -310,6 +315,9 @@ int32_t LPTrackpadStart(LPTrackpadCallback callback) {
         running = true;
         diagnostics.frameCount = 0;
         diagnostics.rejectedFrameCount = 0;
+        diagnostics.maximumRawContactCount = 0;
+        diagnostics.maximumContactCount = 0;
+        diagnostics.rejectionFlags = 0;
         ++diagnostics.generation;
         pthread_mutex_unlock(&frameMutex);
     }

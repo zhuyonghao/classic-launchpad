@@ -1,5 +1,6 @@
 import AppKit
 import CMultitouchBridge
+import os
 
 /// The C callback runs on the device's thread. Copy its borrowed memory there,
 /// then deliver on the main queue, where both the recognizer and UI are owned.
@@ -25,6 +26,7 @@ private enum TrackpadFrameDelivery {
 
 @MainActor
 final class TrackpadGestureMonitor {
+    private static let logger = Logger(subsystem: "com.local.ClassicLaunchpad", category: "TrackpadGesture")
     enum Status {
         case disabled, listening(Int), unavailable
 
@@ -109,6 +111,7 @@ final class TrackpadGestureMonitor {
             TrackpadFrameDelivery.deliver(device: device, contacts: contacts, timestamp: timestamp)
         }
         deviceGeneration = LPTrackpadGetDiagnostics().generation
+        Self.logger.info("start enabled=\(self.isEnabled, privacy: .public) deviceCount=\(count, privacy: .public)")
         updateStatus(count)
         guard count >= 0 else {
             TrackpadFrameDelivery.setHandler(nil)
@@ -121,6 +124,8 @@ final class TrackpadGestureMonitor {
                 guard let self, self.isEnabled, !self.asleep else { return }
                 let count = LPTrackpadRefresh()
                 let generation = LPTrackpadGetDiagnostics().generation
+                let diagnostics = LPTrackpadGetDiagnostics()
+                Self.logger.debug("frames=\(diagnostics.frameCount, privacy: .public) rejected=\(diagnostics.rejectedFrameCount, privacy: .public) maxRaw=\(diagnostics.maximumRawContactCount, privacy: .public) maxActive=\(diagnostics.maximumContactCount, privacy: .public) rejectionFlags=\(diagnostics.rejectionFlags, privacy: .public)")
                 if generation != self.deviceGeneration {
                     self.deviceGeneration = generation
                     self.recognizers.removeAll()
@@ -153,7 +158,7 @@ final class TrackpadGestureMonitor {
         if isSuspended() {
             if !contacts.isEmpty { ignoredSequences.insert(device) }
             recognizers.removeValue(forKey: device)
-            trace(device: device, count: contacts.count, state: "paused for mouse drag or dialog")
+            trace(device: device, count: contacts.count, state: "paused for icon drag or dialog")
             return
         }
         guard !ignoredSequences.contains(device) else {
@@ -162,6 +167,9 @@ final class TrackpadGestureMonitor {
         }
         var recognizer = recognizers[device] ?? FourFingerGestureRecognizer()
         let gesture = recognizer.process(contacts: contacts, timestamp: timestamp)
+        if diagnosticStates[device] != recognizer.diagnostic.rawValue, let metrics = recognizer.metrics {
+            Self.logger.debug("elapsed=\(metrics.elapsed, privacy: .public) scale=\(metrics.scale, privacy: .public) centerMovement=\(metrics.centerMovement, privacy: .public) rotation=\(metrics.rotation, privacy: .public) shapeError=\(metrics.shapeError, privacy: .public)")
+        }
         trace(device: device, count: contacts.count, state: gesture.map { String(describing: $0) } ?? recognizer.diagnostic.rawValue)
         if contacts.isEmpty { recognizers.removeValue(forKey: device) }
         else { recognizers[device] = recognizer }
@@ -173,7 +181,7 @@ final class TrackpadGestureMonitor {
         // never record touch coordinates, identities, or individual frames.
         guard count == 4 || diagnosticStates[device] != nil else { return }
         if diagnosticStates[device] != state {
-            NSLog("[Launchpad gesture] fingers=%ld state=%@", count, state)
+            Self.logger.info("fingers=\(count, privacy: .public) state=\(state, privacy: .public)")
         }
         if count == 0 { diagnosticStates.removeValue(forKey: device) }
         else { diagnosticStates[device] = state }
