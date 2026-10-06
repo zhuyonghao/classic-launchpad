@@ -97,4 +97,4 @@ GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试
 
 ## 登录自动启动
 
-本机安装在 `/Applications/启动台.app`。用户 LaunchAgent `com.local.ClassicLaunchpad.login` 在登录时使用 `--background` 启动，保持窗口收起，四指捏合、⌥⌘L 或菜单栏可打开。配置位于 `~/Library/LaunchAgents/com.local.ClassicLaunchpad.login.plist`。
+本机安装在 `/Applications/启动台.app`。用户 LaunchAgent `com.local.ClassicLaunchpad.login` 在登录时正常打开启动台界面；收起后可用四指捏合、⌥⌘L 或菜单栏再次打开。配置位于 `~/Library/LaunchAgents/com.local.ClassicLaunchpad.login.plist`。
