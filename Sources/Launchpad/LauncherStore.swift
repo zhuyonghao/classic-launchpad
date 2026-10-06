@@ -309,20 +309,21 @@ private struct PersistedLayout: Codable {
     let items: [LauncherItem]
 }
 
-private enum AppCatalogScanner {
+enum AppCatalogScanner {
     struct Result {
         var apps: [LauncherApp]
         var issue: String?
     }
 
-    static func scan() -> Result {
+    static func scan(roots customRoots: [URL]? = nil) -> Result {
         let fileManager = FileManager.default
         // Earlier roots win if an application is installed in more than one location.
-        let roots = [
+        let roots = customRoots ?? [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true),
             URL(fileURLWithPath: "/System/Applications", isDirectory: true),
-            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true)
+            URL(fileURLWithPath: "/System/Applications/Utilities", isDirectory: true),
+            URL(fileURLWithPath: "/System/Library/CoreServices/Applications", isDirectory: true)
         ]
         var result: [LauncherApp] = []
         var seenPaths = Set<String>()
@@ -333,8 +334,9 @@ private enum AppCatalogScanner {
             let standardized = url.standardizedFileURL
             guard !seenPaths.contains(standardized.path), let bundle = Bundle(url: standardized) else { return }
             let info = bundle.infoDictionary ?? [:]
-            // LSUIElement also identifies user-facing menu-bar utilities, so keep those.
-            guard !isEnabled(info["LSBackgroundOnly"]) else { return }
+            // Installed standalone apps can set both LSBackgroundOnly and
+            // LSUIElement (BetterDisplay). Package boundaries exclude embedded
+            // helpers; these flags must not hide launchable menu-bar utilities.
             // Launchpad itself is a launcher, rather than an application to launch inside it.
             let identifier = bundle.bundleIdentifier ?? standardized.path
             guard identifier != "com.local.ClassicLaunchpad", identifier != "com.apple.launchpad.launcher",
@@ -361,7 +363,7 @@ private enum AppCatalogScanner {
                     addApplication(at: child)
                     continue
                 }
-                guard depth < 3,
+                guard depth < 16,
                       let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]),
                       values.isDirectory == true, values.isSymbolicLink != true, values.isPackage != true else { continue }
                 walk(child, depth: depth + 1)
@@ -369,7 +371,7 @@ private enum AppCatalogScanner {
         }
 
         for root in roots { walk(root, depth: 0) }
-        if !seenBundles.contains("com.apple.Safari") {
+        if customRoots == nil && !seenBundles.contains("com.apple.Safari") {
             addApplication(at: URL(fileURLWithPath: "/System/Cryptexes/App/System/Applications/Safari.app"))
         }
         let preferredOrder = [
@@ -390,11 +392,7 @@ private enum AppCatalogScanner {
         return Result(apps: result, issue: readableRoots == 0 ? "无法读取应用程序文件夹。请检查文件夹权限后重试。" : nil)
     }
 
-    private static func isEnabled(_ value: Any?) -> Bool {
-        if let bool = value as? Bool { return bool }
-        if let string = value as? String { return ["true", "yes", "1"].contains(string.lowercased()) }
-        return false
-    }
+
 }
 
 private enum AppSearch {

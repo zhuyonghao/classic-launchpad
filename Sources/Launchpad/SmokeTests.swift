@@ -53,6 +53,26 @@ func runSmokeTests() async {
             try check(store.search("liulanqi").contains(safari), "pinyin search")
         }
         try check(store.search("zzzz-no-such-application-987654").isEmpty, "empty search results")
+        let keychainURL = URL(fileURLWithPath: "/System/Library/CoreServices/Applications/Keychain Access.app")
+        if FileManager.default.fileExists(atPath: keychainURL.path) {
+            try check(store.apps.contains { $0.url == keychainURL }, "CoreServices user-facing apps are discovered")
+        }
+        let nestedRoot = directory.appendingPathComponent("nested-apps")
+        let nestedApp = nestedRoot.appendingPathComponent("one/two/three/four/five/Nested.app")
+        try FileManager.default.createDirectory(at: nestedApp.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        let nestedInfo: [String: Any] = ["CFBundleIdentifier": "test.nested.app", "CFBundleName": "Nested", "CFBundlePackageType": "APPL", "LSBackgroundOnly": true, "LSUIElement": true]
+        try PropertyListSerialization.data(fromPropertyList: nestedInfo, format: .xml, options: 0).write(to: nestedApp.appendingPathComponent("Contents/Info.plist"))
+        try check(AppCatalogScanner.scan(roots: [nestedRoot]).apps.contains { $0.bundleIdentifier == "test.nested.app" }, "apps deeper than three directory levels are discovered")
+        let betterDisplayURL = URL(fileURLWithPath: "/Applications/BetterDisplay.app")
+        if FileManager.default.fileExists(atPath: betterDisplayURL.path) {
+            try check(store.apps.contains { $0.url == betterDisplayURL }, "BetterDisplay is retained despite background-only flags")
+        }
+        let helperApp = nestedApp.appendingPathComponent("Contents/Library/LoginItems/Helper.app/Contents")
+        try FileManager.default.createDirectory(at: helperApp, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "test.embedded.helper", "CFBundlePackageType": "APPL"], format: .xml, options: 0).write(to: helperApp.appendingPathComponent("Info.plist"))
+        try check(AppCatalogScanner.scan(roots: [nestedRoot]).apps.count == 1, "embedded helper apps remain excluded")
+
+
         let defaults = store.items
         let sessionPreferences = UserDefaults(suiteName: "ClassicLaunchpad.Smoke.\(UUID().uuidString)")!
         let session = LauncherSession(preferences: sessionPreferences)
