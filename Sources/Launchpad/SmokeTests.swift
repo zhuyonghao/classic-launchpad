@@ -157,6 +157,11 @@ func runSmokeTests() async {
         try checkLayout("arbitrary icon merge preserves all apps")
         store.resetLayout()
         try check(store.errorMessage == nil, "no catalog or persistence errors")
+        let retainedIcon = store.apps[0].icon
+        LauncherIconCache.removeAll()
+        let rebuiltIcon = store.apps[0].icon
+        try check(rebuiltIcon !== retainedIcon && rebuiltIcon.representations.first?.pixelsWide == 200, "evicted icon cache rebuilds at bounded Retina size")
+        LauncherWallpaperCache.removeAll()
         print("All smoke tests passed.")
     } catch {
         fputs("FAIL \(error)\n", stderr)
