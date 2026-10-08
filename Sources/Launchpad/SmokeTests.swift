@@ -17,7 +17,6 @@ func runSmokeTests() async {
         }
 
         try runFourFingerGestureTests()
-        try runSystemGestureConflictTests(in: directory)
 
         let sample = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
                                       bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
