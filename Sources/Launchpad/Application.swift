@@ -160,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var previousPresentation: NSApplication.PresentationOptions?
     private var wallpaperRequest = UUID()
     private var presentationRequest = UUID()
+    private var checkingSystemGestures = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         makeMenus()
@@ -215,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        suppressSystemGestureConflicts()
         if window?.isVisible == true {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -242,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showLauncher() {
         guard window != nil else { return }
+        suppressSystemGestureConflicts()
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main
         if let screen {
@@ -342,7 +345,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let enabled = !gestureMonitor.isEnabled
         UserDefaults.standard.set(enabled, forKey: "fourFingerGesturesEnabled")
         gestureMonitor.setEnabled(enabled)
+        if enabled { suppressSystemGestureConflicts() }
         updateGestureMenuState()
+    }
+
+    private func suppressSystemGestureConflicts() {
+        guard !isUITest, !checkingSystemGestures,
+              UserDefaults.standard.bool(forKey: "fourFingerGesturesEnabled") else { return }
+        checkingSystemGestures = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let failure: String?
+            do { try SystemGestureConflictManager().disableConflicts(); failure = nil }
+            catch { failure = error.localizedDescription }
+            DispatchQueue.main.async { [weak self] in
+                self?.checkingSystemGestures = false
+                if let failure { self?.store.errorMessage = failure }
+            }
+        }
     }
 
     private func updateGestureMenuState() {
@@ -352,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func showGestureHelp() {
         let alert = NSAlert()
         alert.messageText = "四指触控板手势"
-        alert.informativeText = "四指捏合打开启动台，四指张开收起启动台。收起后程序会继续运行，下次仍可用手势打开。\n\n如果同时触发系统界面，请在“系统设置 → 触控板 → 更多手势”中关闭同样使用四指的“启动台/应用”和“显示桌面”（名称因系统版本而异）。\n\n需要内建触控板或 Magic Trackpad。菜单中的状态可查看是否检测到触控板。"
+        alert.informativeText = "四指捏合打开启动台，四指张开收起启动台。收起后程序会继续运行，下次仍可用手势打开。\n\n启用四指手势时，应用自动关闭系统的启动台/应用及显示桌面重复手势，并在修改前保存原设置；只有设置发生变化时才重载 Dock。退出应用后，系统手势保持关闭。\n\n需要内建触控板或 Magic Trackpad。菜单中的状态可查看是否检测到触控板。"
         alert.addButton(withTitle: "好")
         alert.runModal()
     }
@@ -389,7 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.7",
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.8",
             .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
