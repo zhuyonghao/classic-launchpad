@@ -98,9 +98,3 @@ GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试
 ## 登录时打开
 
 在“系统设置 → 通用 → 登录项与扩展 → 登录时打开”中，添加 `/Applications/启动台.app`。登录后会正常显示启动台界面。
-
-## 1.1.8 自动处理系统手势冲突
-
-启用应用的四指手势时，打开启动台自动关闭系统启动台/“应用”、显示桌面的重复捏合和张开手势，包括内建与蓝牙触控板设置。其他触控板手势保持原样。仅在发现设置变化时写入并重载 Dock；反复打开不会重复重启 Dock。
-
-首次修改前，将原设置（包括原本不存在的键）保存到 `~/Library/Application Support/com.local.ClassicLaunchpad/system-gestures-before-disable.plist`，以后不会覆盖。退出应用后系统手势仍保持关闭。写入或备份失败会显示提示。界面测试版及 smoke tests 不修改真实系统手势；测试使用隔离配置。
