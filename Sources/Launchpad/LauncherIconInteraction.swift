@@ -21,6 +21,7 @@ struct LauncherIconInteraction: NSViewRepresentable {
     let onTargetChanged: (Bool) -> Void
     var activationSize: NSSize? = nil
     var onBlankClick: () -> Void = {}
+    var onPressedChanged: (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> LauncherIconInteractionView {
         let view = LauncherIconInteractionView(frame: .zero)
@@ -41,6 +42,7 @@ struct LauncherIconInteraction: NSViewRepresentable {
         view.onTargetChanged = onTargetChanged
         view.activationSize = activationSize
         view.onBlankClick = onBlankClick
+        view.onPressedChanged = onPressedChanged
         // Mouse-down state and active drag payload deliberately survive updates.
     }
 }
@@ -50,6 +52,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
 
     var activationSize: NSSize?
     var onBlankClick: () -> Void = {}
+    var onPressedChanged: (Bool) -> Void = { _ in }
     private func isContent(_ point: NSPoint) -> Bool {
         guard let size = activationSize else { return !itemID.isEmpty }
         return NSRect(x: (bounds.width - size.width) / 2, y: 0, width: size.width, height: size.height).contains(point)
@@ -70,6 +73,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     private var didDrag = false
     private var activePayload: LauncherDragPayload?
     private var isDropTarget = false
+    private var isPressed = false
     private static let debugEnabled = ["1", "true", "yes"].contains(
         ProcessInfo.processInfo.environment["CLASSIC_LAUNCHPAD_DRAG_DEBUG"]?.lowercased() ?? ""
     )
@@ -94,24 +98,32 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
             mouseDownEvent = nil
+            setPressed(false)
             super.rightMouseDown(with: event)
             return
         }
         mouseDownEvent = event
         didDrag = false
         activePayload = nil
+        setPressed(isContent(convert(event.locationInWindow, from: nil)))
         debug("mouseDown (key window \(window?.isKeyWindow ?? false))")
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard !didDrag, let mouseDownEvent else { return }
-        guard isContent(convert(mouseDownEvent.locationInWindow, from: nil)) else { didDrag = true; return }
+        guard isContent(convert(mouseDownEvent.locationInWindow, from: nil)) else {
+            didDrag = true
+            setPressed(false)
+            return
+        }
+        setPressed(isContent(convert(event.locationInWindow, from: nil)))
         let distance = hypot(event.locationInWindow.x - mouseDownEvent.locationInWindow.x,
                              event.locationInWindow.y - mouseDownEvent.locationInWindow.y)
         guard distance >= 5 else { return }
         // Mark the gesture before invoking AppKit, which can call back synchronously.
         // Even a failed or cancelled drag must not turn into an application launch.
         didDrag = true
+        setPressed(false)
         let payload = LauncherDragPayload(itemID: itemID, folderID: sourceFolderID)
         guard let data = try? JSONEncoder().encode(payload) else {
             debug("payload encoding failed")
@@ -139,6 +151,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         let shouldActivate = mouseDownEvent != nil && !didDrag && bounds.contains(convert(event.locationInWindow, from: nil))
         debug("mouseUp (has down \(mouseDownEvent != nil), dragged \(didDrag), activate \(shouldActivate))")
         mouseDownEvent = nil
+        setPressed(false)
         if shouldActivate {
             debug("activate")
             if isContent(convert(event.locationInWindow, from: nil)) { onActivate() }
@@ -147,6 +160,8 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        mouseDownEvent = nil
+        setPressed(false)
         // Let the enclosing SwiftUI tile provide its existing context menu.
         super.rightMouseDown(with: event)
     }
@@ -168,6 +183,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         debug("native drag ended (operation \(operation.rawValue))")
         mouseDownEvent = nil
         activePayload = nil
+        setPressed(false)
         // Keep didDrag true until the next mouseDown, in case a final mouseUp arrives.
         setDropTarget(false)
         onDragEnded()
@@ -225,6 +241,12 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         guard isDropTarget != targeted else { return }
         isDropTarget = targeted
         onTargetChanged(targeted)
+    }
+
+    private func setPressed(_ pressed: Bool) {
+        guard isPressed != pressed else { return }
+        isPressed = pressed
+        onPressedChanged(pressed)
     }
 
     private func debug(_ message: String) {
