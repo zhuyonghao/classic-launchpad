@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Carbon
 
 @MainActor
 func runSmokeTests() async {
@@ -18,6 +19,26 @@ func runSmokeTests() async {
 
         try runFourFingerGestureTests()
         try runIconInteractionTests()
+
+        func launchEvent(_ eventID: AEEventID = kAEOpenApplication, reason: OSType? = nil,
+                         restoreState: OSType? = nil) -> NSAppleEventDescriptor {
+            let event = NSAppleEventDescriptor(eventClass: kCoreEventClass, eventID: eventID,
+                                              targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                              transactionID: AETransactionID(kAnyTransactionID))
+            if let reason { event.setParam(NSAppleEventDescriptor(enumCode: reason), forKeyword: keyAEPropData) }
+            if let restoreState { event.setParam(NSAppleEventDescriptor(enumCode: restoreState), forKeyword: keyAERestoreAppState) }
+            return event
+        }
+        try check(LauncherStartup.shouldShowLauncher(launchEvent: nil), "direct binary launch shows launcher")
+        try check(LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(), isDefaultLaunch: true), "manual app launch shows launcher")
+        try check(!LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(reason: keyAELaunchedAsLogInItem), isDefaultLaunch: true), "login launch stays in background even when marked default")
+        try check(!LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(reason: keyAELaunchedAsServiceItem)), "service launch stays in background")
+        try check(!LauncherStartup.shouldShowLauncher(launchEvent: nil, isDefaultLaunch: false), "AppKit saved-state launch stays in background without Apple event")
+        try check(!LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(restoreState: kAEYes)), "system state restoration stays in background")
+        try check(LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(restoreState: kAENo)), "manual launch without state restoration shows launcher")
+        try check(!LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(kAEReopenApplication, reason: keyAELaunchedAsLogInItem)), "duplicate login event does not reveal launcher")
+        try check(!LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(kAEReopenApplication, restoreState: kAEYes)), "automatic reopen does not reveal launcher")
+        try check(LauncherStartup.shouldShowLauncher(launchEvent: launchEvent(kAEReopenApplication)), "Dock or Finder reopen shows launcher")
 
         let sample = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
                                       bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,

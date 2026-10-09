@@ -17,7 +17,8 @@ enum FourFingerGesture: Equatable {
 /// 四指可在 0.30 秒内依次落下；之后必须保持同一组四个触点。收拢/张开需
 /// 半径改变 10%，并至少改变触控板归一化尺寸的 1.2%。手势至少持续
 /// 0.08 秒、跨越四帧，越过阈值后还需保持 0.008 秒，过滤短暂抖动。
-/// 中心漂移容差随收缩/扩张幅度增加，允许以基本固定的拇指为中心捏合。
+/// 四指持续同向移动时按滑动处理，直到全部抬指；中心漂移容差按初始
+/// 手指范围及收缩/扩张、旋转幅度计算，允许以基本固定的拇指为中心捏合。
 /// 旋转超过约 26° 或明显不一致的手指运动会中止识别。
 /// 断帧超过 0.22 秒、身份改变、异常输入或触发后都等待全部抬指才重新开始，
 /// 防止半次手势、四指平移以及同一次触摸序列重复触发。
@@ -25,7 +26,7 @@ struct FourFingerGestureRecognizer {
     enum Diagnostic: String {
         case idle, assembling, tracking, candidate, recognized
         case invalidInput, wrongFingerCount, frameGap, changedIdentity, timedOut
-        case centerDrift, shapeOrRotation, contactsTooClose
+        case swipeCandidate, directionalSwipe, centerDrift, shapeOrRotation, contactsTooClose
     }
 
     private(set) var diagnostic: Diagnostic = .idle
@@ -61,6 +62,7 @@ struct FourFingerGestureRecognizer {
     private var lastTimestamp: TimeInterval?
     private var baseline: Baseline?
     private var candidate: Candidate?
+    private var swipeStart: TimeInterval?
     private var sampleCount = 0
     private var lockedUntilLift = false
 
@@ -69,6 +71,7 @@ struct FourFingerGestureRecognizer {
         lastTimestamp = nil
         baseline = nil
         candidate = nil
+        swipeStart = nil
         sampleCount = 0
         lockedUntilLift = false
         diagnostic = .idle
@@ -135,9 +138,6 @@ struct FourFingerGestureRecognizer {
         }
         sampleCount += 1
         let centerMovement = hypot(center.x - baseline.center.x, center.y - baseline.center.y)
-        // A pinch around a stationary thumb translates the centroid as it
-        // changes radius. Translation alone still has only the small allowance.
-        let radiusChange = abs(radius - baseline.radius)
         guard centerMovement <= 0.25 else {
             invalidateSequence(.centerDrift)
             return nil
@@ -173,6 +173,29 @@ struct FourFingerGestureRecognizer {
             return nil
         }
 
+        // A swipe can change finger spacing as well as the centroid. Compare
+        // absolute contact motion, not just the recentered shape: all four
+        // moving substantially along the centroid's direction means a swipe.
+        // A pinch has opposing fingers or a nearly stationary anchor (thumb).
+        // Confirm across time so a single settling/noisy frame does not lock it.
+        let centerOffset = Point(x: center.x - baseline.center.x, y: center.y - baseline.center.y)
+        let movesTogether = centerMovement >= 0.04 && zip(baseline.vectors, vectors).allSatisfy { old, current in
+            let dx = centerOffset.x + current.x - old.x
+            let dy = centerOffset.y + current.y - old.y
+            let forwardMovement = (dx * centerOffset.x + dy * centerOffset.y) / centerMovement
+            return forwardMovement > max(0.008, centerMovement * 0.30)
+        }
+        if movesTogether {
+            if swipeStart == nil { swipeStart = timestamp }
+            candidate = nil
+            diagnostic = .swipeCandidate
+            if timestamp - (swipeStart ?? timestamp) >= 0.02 - 1e-9 {
+                invalidateSequence(.directionalSwipe)
+            }
+            return nil
+        }
+        swipeStart = nil
+
         let scale = radius / baseline.radius
         let delta = radius - baseline.radius
         let gesture: FourFingerGesture?
@@ -188,11 +211,14 @@ struct FourFingerGestureRecognizer {
             diagnostic = .tracking
             return nil
         }
-        // Do not reject the early settling phase merely because its center
-        // moves. Evaluate translation only after enough scale change exists.
-        guard centerMovement <= 0.08 + 3 * radiusChange else {
-            candidate = nil
-            diagnostic = .centerDrift
+        // Scaling/rotating around any initial contact can legitimately move
+        // the centroid by at most the farthest contact's radius times the
+        // fitted transform's movement. Allow a little extra drift for settling,
+        // but do not let a long swipe borrow an arbitrary translation budget.
+        let anchorRadius = baseline.vectors.map(\.length).max() ?? baseline.radius
+        let transformMovement = hypot(1 - fitScale * cosine, fitScale * sine)
+        guard centerMovement <= 0.015 + anchorRadius * transformMovement else {
+            invalidateSequence(.centerDrift)
             return nil
         }
         let consistentFingers = zip(baseline.vectors, vectors).filter { old, current in
@@ -217,6 +243,7 @@ struct FourFingerGestureRecognizer {
     private mutating func invalidateSequence(_ reason: Diagnostic) {
         baseline = nil
         candidate = nil
+        swipeStart = nil
         sampleCount = 0
         lockedUntilLift = true
         diagnostic = reason
