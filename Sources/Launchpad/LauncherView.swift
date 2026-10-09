@@ -194,7 +194,7 @@ struct LauncherView: View {
                     ForEach(0..<session.columns, id: \.self) { column in
                         let index = row * session.columns + column
                         if index < items.count {
-                            appTile(items[index], iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                            appTile(items[index], iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight, page: page)
                         } else {
                             Color.clear.frame(width: cellWidth, height: rowHeight)
                                 .overlay {
@@ -212,37 +212,45 @@ struct LauncherView: View {
         }
     }
 
-    private func appTile(_ item: LauncherItem, iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
+    private func appTile(_ item: LauncherItem, iconSize: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat, page: Int) -> some View {
         let selected = session.selectedID == item.id
-        return VStack(spacing: 5) {
-            Group {
-                if item.isFolder {
-                    folderIcon(item, size: iconSize)
-                } else if let app = store.app(for: item.appIDs.first ?? item.id) {
-                    Image(nsImage: app.icon).resizable().interpolation(.high)
-                        .frame(width: iconSize, height: iconSize)
-                        .shadow(color: .black.opacity(0.2), radius: 3, y: 4)
+        let folderID = session.folderID
+        let query = session.query
+        return LauncherTileFeedback(isFolder: item.isFolder, isActive: page == session.page,
+            anchor: UnitPoint(x: 0.5, y: (iconSize + 10) / (2 * rowHeight)), onActivate: {
+                guard session.isPresented, session.page == page, session.folderID == folderID,
+                      session.query == query, session.draggingID == nil else { return }
+                session.activate(item, store: store)
+            }) {
+            VStack(spacing: 5) {
+                Group {
+                    if item.isFolder {
+                        folderIcon(item, size: iconSize)
+                    } else if let app = store.app(for: item.appIDs.first ?? item.id) {
+                        Image(nsImage: app.icon).resizable().interpolation(.high)
+                            .frame(width: iconSize, height: iconSize)
+                            .shadow(color: .black.opacity(0.2), radius: 3, y: 4)
+                    }
                 }
+                .padding(5)
+                .background(RoundedRectangle(cornerRadius: 19).fill(.white.opacity(selected ? 0.19 : 0)))
+                .overlay(RoundedRectangle(cornerRadius: 19).stroke(.white.opacity(selected ? 0.45 : 0), lineWidth: 1))
+                Text(item.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.8), radius: 2, y: 1)
+                    .lineLimit(1).truncationMode(.tail)
+                    .padding(.horizontal, 4)
             }
-            .padding(5)
-            .background(RoundedRectangle(cornerRadius: 19).fill(.white.opacity(selected ? 0.19 : 0)))
-            .overlay(RoundedRectangle(cornerRadius: 19).stroke(.white.opacity(selected ? 0.45 : 0), lineWidth: 1))
-            Text(item.name)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.8), radius: 2, y: 1)
-                .lineLimit(1).truncationMode(.tail)
-                .padding(.horizontal, 4)
-        }
-        .frame(width: cellWidth, height: rowHeight, alignment: .top)
-        .contentShape(Rectangle())
-        .overlay {
+            .frame(width: cellWidth, height: rowHeight, alignment: .top)
+            .contentShape(Rectangle())
+        } interaction: { actions in
             LauncherIconInteraction(
                 id: item.id,
                 name: item.name,
                 image: item.isFolder ? NSImage(named: NSImage.folderName)! : (store.app(for: item.id)?.icon ?? NSImage()),
                 sourceFolderID: session.folderID,
-                onActivate: { session.activate(item, store: store) },
+                onActivate: actions.activate,
                 onDragStarted: { payload in
                     session.draggingID = payload.itemID
                     session.dragFolderID = payload.folderID
@@ -263,9 +271,11 @@ struct LauncherView: View {
                     else if session.selectedID == item.id { session.selectedID = nil }
                 },
                 activationSize: NSSize(width: iconSize + 10, height: iconSize + 35),
-                onBlankClick: { returnFromBlank() }
+                onBlankClick: { returnFromBlank() },
+                onPressedChanged: actions.setPressed
             )
         }
+        .id(item.id)
         .contextMenu {
             if item.isFolder {
                 Button("打开文件夹") { session.activate(item, store: store) }
