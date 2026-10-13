@@ -39,7 +39,13 @@ if [[ "$ALREADY_PUBLISHED" == false ]]; then
     gh release upload "$RELEASE_TAG" --repo "$GH_REPO" --clobber "${ASSETS[@]}"
 fi
 
-gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$RELEASE_STATE"
+# The REST tag lookup only returns published releases. Resolve drafts by ID.
+RELEASE_ID="$(gh release view "$RELEASE_TAG" --repo "$GH_REPO" --json databaseId --jq '.databaseId')"
+if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+    printf 'Cannot determine Release ID.\n' >&2
+    exit 1
+fi
+gh api "repos/$GH_REPO/releases/$RELEASE_ID" > "$RELEASE_STATE"
 python3 - "$RELEASE_STATE" "$ALREADY_PUBLISHED" "${ASSETS[@]}" <<'PY'
 import hashlib
 import json
