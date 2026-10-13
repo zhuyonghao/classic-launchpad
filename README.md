@@ -2,6 +2,10 @@
 
 一款用 Swift、SwiftUI 和 AppKit 编写的原生 Mac 应用，重现 macOS 15 启动台的全屏应用网格、模糊桌面背景、搜索、分页和文件夹。读取本机的应用名称与图标，点击即可启动真实应用。
 
+## 下载安装
+
+在 [Releases](https://github.com/zhuyonghao/classic-launchpad/releases/latest) 下载对应安装包：M 系列芯片选择 `arm64.zip`，Intel Mac 选择 `x86_64.zip`。解压后将“启动台.app”移到“应用程序”文件夹。需要 macOS 14 或更新版本。
+
 ## 构建与运行
 
 需要 macOS 14 或更新版本以及 Xcode Command Line Tools（`xcode-select --install`）。不依赖第三方库，不需要 Xcode 工程。
@@ -52,6 +56,8 @@ open "build/启动台.app"
 需要验证真实鼠标拖放时，运行 `./Scripts/prepare-ui-test.sh`，再打开 `build/启动台测试.app`。它使用独立测试布局、普通窗口和拖放日志，不会改动正式应用的布局；测试产物均位于 Git 忽略的 `build/` 中。
 
 GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试并生成应用 ZIP。推送到 `main`、`codex/` 分支或提交 Pull Request 后自动运行。
+
+发布新版本时，先更新 `Resources/Info.plist` 中的版本号，合并到 `main`，再推送对应的 `vMAJOR.MINOR.PATCH` 标签，例如 `v1.1.14`。标签会触发两个架构的构建与测试；校验安装包版本和架构后，工作流上传两份安装包及 `SHA256SUMS.txt`，最后公开 Release。可在 `.github/release-notes/` 添加同名标签的 Markdown 更新说明；未提供时使用 GitHub 自动生成的说明。
 
 ## 1.1.1 翻页性能
 
