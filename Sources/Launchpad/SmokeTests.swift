@@ -19,6 +19,8 @@ func runSmokeTests() async {
 
         try runFourFingerGestureTests()
         try runIconInteractionTests()
+        try runDockDragTests()
+        try runDragFeedbackTests()
 
         func launchEvent(_ eventID: AEEventID = kAEOpenApplication, reason: OSType? = nil,
                          restoreState: OSType? = nil) -> NSAppleEventDescriptor {
