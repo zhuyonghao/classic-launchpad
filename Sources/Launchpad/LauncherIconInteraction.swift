@@ -19,6 +19,9 @@ struct LauncherIconInteraction: NSViewRepresentable {
     let canDrop: (LauncherDragPayload) -> Bool
     let onDrop: (LauncherDragPayload, CGFloat) -> Bool
     let onTargetChanged: (Bool) -> Void
+    var applicationURL: URL? = nil
+    var onDragMoved: (NSPoint) -> Void = { _ in }
+    var onDropLocationChanged: (CGFloat?) -> Void = { _ in }
     var activationSize: NSSize? = nil
     var onBlankClick: () -> Void = {}
     var onPressedChanged: (Bool) -> Void = { _ in }
@@ -34,12 +37,15 @@ struct LauncherIconInteraction: NSViewRepresentable {
         view.itemName = name
         view.dragImage = image
         view.sourceFolderID = sourceFolderID
+        view.applicationURL = applicationURL
         view.onActivate = onActivate
         view.onDragStarted = onDragStarted
         view.onDragEnded = onDragEnded
+        view.onDragMoved = onDragMoved
         view.canDrop = canDrop
         view.onDrop = onDrop
         view.onTargetChanged = onTargetChanged
+        view.onDropLocationChanged = onDropLocationChanged
         view.activationSize = activationSize
         view.onBlankClick = onBlankClick
         view.onPressedChanged = onPressedChanged
@@ -62,16 +68,20 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     var itemName = ""
     var dragImage = NSImage()
     var sourceFolderID: String?
+    var applicationURL: URL?
     var onActivate: () -> Void = {}
     var onDragStarted: (LauncherDragPayload) -> Void = { _ in }
     var onDragEnded: () -> Void = {}
+    var onDragMoved: (NSPoint) -> Void = { _ in }
     var canDrop: (LauncherDragPayload) -> Bool = { _ in false }
     var onDrop: (LauncherDragPayload, CGFloat) -> Bool = { _, _ in false }
     var onTargetChanged: (Bool) -> Void = { _ in }
+    var onDropLocationChanged: (CGFloat?) -> Void = { _ in }
 
     private var mouseDownEvent: NSEvent?
     private var didDrag = false
     private var activePayload: LauncherDragPayload?
+    private var activeApplicationURL: URL?
     private var isDropTarget = false
     private var isPressed = false
     private static let debugEnabled = ["1", "true", "yes"].contains(
@@ -105,6 +115,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         mouseDownEvent = event
         didDrag = false
         activePayload = nil
+        activeApplicationURL = nil
         setPressed(isContent(convert(event.locationInWindow, from: nil)))
         debug("mouseDown (key window \(window?.isKeyWindow ?? false))")
     }
@@ -125,16 +136,15 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         didDrag = true
         setPressed(false)
         let payload = LauncherDragPayload(itemID: itemID, folderID: sourceFolderID)
-        guard let data = try? JSONEncoder().encode(payload) else {
-            debug("payload encoding failed")
-            return
-        }
-        let pasteboardItem = NSPasteboardItem()
-        guard pasteboardItem.setData(data, forType: Self.pasteboardType) else {
+        let exportedURL = Self.exportedApplicationURL(applicationURL)
+        guard let pasteboardItem = Self.dragPasteboardItem(payload: payload, applicationURL: exportedURL) else {
             debug("pasteboard write failed")
             return
         }
         activePayload = payload
+        // Snapshot the URL with the payload so a SwiftUI refresh cannot change an
+        // in-flight drag from an application into a folder, or vice versa.
+        activeApplicationURL = exportedURL
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
         let point = convert(mouseDownEvent.locationInWindow, from: nil)
         let side: CGFloat = 80
@@ -167,7 +177,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        let operation: NSDragOperation = context == .withinApplication ? .move : []
+        let operation = Self.sourceOperationMask(for: context, applicationURL: activeApplicationURL)
         debug("source operation (within app \(context == .withinApplication), mask \(operation.rawValue))")
         return operation
     }
@@ -177,34 +187,40 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
         debug("native drag started")
         if let activePayload { onDragStarted(activePayload) }
+        onDragMoved(screenPoint)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
+        onDragMoved(screenPoint)
     }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         debug("native drag ended (operation \(operation.rawValue))")
         mouseDownEvent = nil
         activePayload = nil
+        activeApplicationURL = nil
         setPressed(false)
         // Keep didDrag true until the next mouseDown, in case a final mouseUp arrives.
-        setDropTarget(false)
+        setDropFeedback(nil)
         onDragEnded()
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let accepted = acceptedPayload(from: sender) != nil
         debug("destination entered (accepted \(accepted))")
-        setDropTarget(accepted)
+        setDropFeedback(accepted ? horizontalFraction(for: sender) : nil)
         return accepted ? .move : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         let accepted = acceptedPayload(from: sender) != nil
-        setDropTarget(accepted)
+        setDropFeedback(accepted ? horizontalFraction(for: sender) : nil)
         return accepted ? .move : []
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         debug("destination exited")
-        setDropTarget(false)
+        setDropFeedback(nil)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -213,19 +229,54 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let payload = acceptedPayload(from: sender) else {
-            setDropTarget(false)
+            setDropFeedback(nil)
             return false
         }
-        let point = convert(sender.draggingLocation, from: nil)
-        let fraction = min(1, max(0, point.x / max(bounds.width, 1)))
-        setDropTarget(false)
+        let fraction = horizontalFraction(for: sender)
+        setDropFeedback(nil)
         let accepted = onDrop(payload, fraction)
         debug("perform drop (fraction \(fraction), accepted \(accepted))")
         return accepted
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
-        setDropTarget(false)
+        setDropFeedback(nil)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        setDropFeedback(nil)
+    }
+
+    /// Keep both representations on one item: the launcher reads its payload,
+    /// while the Dock and Finder read the standard application file URL.
+    static func dragPasteboardItem(payload: LauncherDragPayload, applicationURL: URL?) -> NSPasteboardItem? {
+        guard let data = try? JSONEncoder().encode(payload) else { return nil }
+        let item = NSPasteboardItem()
+        guard item.setData(data, forType: pasteboardType) else { return nil }
+        if let url = exportedApplicationURL(applicationURL),
+           !item.setString(url.absoluteString, forType: .fileURL) { return nil }
+        return item
+    }
+
+    static func sourceOperationMask(for context: NSDraggingContext, applicationURL: URL?) -> NSDragOperation {
+        if context == .withinApplication { return .move }
+        // A Dock drop adds a reference; it must never advertise moving the app
+        // bundle or trigger an internal layout mutation.
+        return exportedApplicationURL(applicationURL) == nil ? [] : [.link, .copy]
+    }
+
+    static func exportedApplicationURL(_ url: URL?) -> URL? {
+        guard let url, url.isFileURL, url.pathExtension.lowercased() == "app" else { return nil }
+        return url
+    }
+
+    static func clampedHorizontalFraction(x: CGFloat, width: CGFloat) -> CGFloat {
+        min(1, max(0, x / max(width, 1)))
+    }
+
+    private func horizontalFraction(for sender: NSDraggingInfo) -> CGFloat {
+        let point = convert(sender.draggingLocation, from: nil)
+        return Self.clampedHorizontalFraction(x: point.x, width: bounds.width)
     }
 
     private func acceptedPayload(from sender: NSDraggingInfo) -> LauncherDragPayload? {
@@ -241,6 +292,11 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         guard isDropTarget != targeted else { return }
         isDropTarget = targeted
         onTargetChanged(targeted)
+    }
+
+    private func setDropFeedback(_ fraction: CGFloat?) {
+        setDropTarget(fraction != nil)
+        onDropLocationChanged(fraction)
     }
 
     private func setPressed(_ pressed: Bool) {

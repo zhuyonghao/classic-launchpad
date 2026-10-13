@@ -45,24 +45,51 @@ final class LauncherSession: ObservableObject {
     }
 
     func restorePresentation() {
+        commitFolderRename()
+        endDrag()
         query = ""
         folderID = nil
+        editingFolderID = nil
+        commitFolderRename = {}
         selectedID = nil
-        draggingID = nil
-        dragFolderID = nil
         page = homePage
     }
     @Published var folderID: String?
     @Published var selectedID: String?
     @Published var draggingID: String?
     @Published var dragFolderID: String?
+    @Published var dropTarget: LauncherDropTarget?
+    @Published var dragPageDirection: Int?
+    @Published var editingFolderID: String?
     @Published var wallpaper: NSImage?
     @Published var activationID = UUID()
     @Published var showsHint = true
     var columns = 7
     var rows = 5
     var dismiss: () -> Void = {}
+    var dragDidBegin: (Bool) -> Void = { _ in }
+    var dragDidEnd: () -> Void = {}
+    var dragDidMove: (NSPoint) -> Void = { _ in }
+    var commitFolderRename: () -> Void = {}
     var pageSize: Int { columns * rows }
+
+    func beginDrag(_ payload: LauncherDragPayload, exportsApplication: Bool) {
+        draggingID = payload.itemID
+        dragFolderID = payload.folderID
+        selectedID = nil
+        dropTarget = nil
+        dragPageDirection = nil
+        dragDidBegin(exportsApplication)
+    }
+
+    func endDrag() {
+        let wasDragging = draggingID != nil
+        draggingID = nil
+        dragFolderID = nil
+        dropTarget = nil
+        dragPageDirection = nil
+        if wasDragging { dragDidEnd() }
+    }
 
     func allItems(_ store: LauncherStore) -> [LauncherItem] {
         if let folderID, let folder = store.items.first(where: { $0.id == folderID }) {
@@ -93,8 +120,12 @@ final class LauncherSession: ObservableObject {
     }
 
     func escape() {
-        draggingID = nil
-        dragFolderID = nil
+        if editingFolderID != nil {
+            editingFolderID = nil
+            commitFolderRename = {}
+            return
+        }
+        endDrag()
         if folderID != nil {
             folderID = nil
             page = homePage
@@ -108,6 +139,7 @@ final class LauncherSession: ObservableObject {
     }
 
     func handleKey(_ event: NSEvent, store: LauncherStore) -> Bool {
+        guard editingFolderID == nil else { return false }
         // Let the input method finish composing Chinese/Japanese text first.
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -174,24 +206,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.delegate = self
         session.dismiss = { [weak self] in self?.hideLauncher() }
+        session.dragDidEnd = { [weak self] in
+            guard let self, !self.isUITest, self.session.isPresented else { return }
+            // Keep presentation options unchanged throughout an active drag.
+            // Auto-hide already reveals the Dock at its screen edge, including
+            // for file URL drags; restoring desktop options here makes it flash.
+            if !NSApp.isActive { self.hideLauncher() }
+        }
+        session.dragDidMove = { [weak self] point in
+            guard let self, !NSMouseInRect(point, self.window.frame, false) else { return }
+            self.session.dragPageDirection = nil
+            self.session.dropTarget = nil
+        }
         window.contentView = NSHostingView(rootView: LauncherView(store: store, session: session))
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window.isKeyWindow, NSApp.modalWindow == nil else { return event }
-            if self.session.draggingID != nil { return event }
+            if self.session.draggingID != nil || self.session.editingFolderID != nil { return event }
             // Folder title editing uses standard text-field commands.
             if let field = self.window.firstResponder as? NSTextView,
                (field.delegate as? NSTextField)?.identifier?.rawValue == "folderName" { return event }
             return self.session.handleKey(event, store: self.store) ? nil : event
         }
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self else { return event }
             // A cancelled AppKit drag may finish outside this window. Clear its state
             // before the next gesture; onDrag sets the state for a fresh session.
-            self?.session.draggingID = nil
-            self?.session.dragFolderID = nil
+            self.session.endDrag()
+            if self.session.editingFolderID != nil, event.window === self.window {
+                if self.isFolderNameClick(event) { return event }
+                // Finish the name before AppKit dispatches the outside click,
+                // and consume that gesture so it cannot launch an application.
+                self.session.commitFolderRename()
+                return nil
+            }
             return event
         }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, self.window.isKeyWindow, NSApp.modalWindow == nil,
+                  self.session.editingFolderID == nil, self.session.draggingID == nil,
                   abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else { return event }
             if event.phase == .began { self.scrollDistance = 0 }
             if event.momentumPhase != [] { return nil }
@@ -235,11 +287,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidResignActive(_ notification: Notification) {
         if isUITest { return }
-        guard NSApp.modalWindow == nil else { return }
+        guard NSApp.modalWindow == nil, session.draggingID == nil else { return }
         hideLauncher()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    private func isFolderNameClick(_ event: NSEvent) -> Bool {
+        func findField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.identifier?.rawValue == "folderName" { return field }
+            for child in view.subviews {
+                if let field = findField(in: child) { return field }
+            }
+            return nil
+        }
+        guard let content = window.contentView, let field = findField(in: content) else { return false }
+        return field.bounds.contains(field.convert(event.locationInWindow, from: nil))
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         gestureMonitor?.invalidate()
@@ -295,11 +359,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hideLauncher() {
+        session.commitFolderRename()
         presentationRequest = UUID()
         session.rememberPage()
         window?.orderOut(nil)
         wallpaperRequest = UUID()
         session.isPresented = false
+        session.editingFolderID = nil
+        session.commitFolderRename = {}
+        session.endDrag()
         session.wallpaper = nil
         let cleanupRequest = presentationRequest
         // Let SwiftUI release image references before evicting decoded caches.
@@ -327,7 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         UserDefaults.standard.register(defaults: ["fourFingerGesturesEnabled": true])
         let monitor = TrackpadGestureMonitor()
         monitor.isSuspended = { [weak self] in
-            NSApp.modalWindow != nil || self?.session.draggingID != nil
+            NSApp.modalWindow != nil || self?.session.draggingID != nil || self?.session.editingFolderID != nil
         }
         monitor.onGesture = { [weak self] gesture in
             guard let self else { return }
@@ -398,7 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.10",
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.14",
             .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
