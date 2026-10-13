@@ -17,6 +17,7 @@ SCRIPT = Path(__file__).with_name("publish-release.sh").resolve()
 TAG = "v1.1.14"
 REPOSITORY = "example/classic-launchpad"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
+RELEASE_ID = 411776261
 ASSET_NAMES = (
     f"ClassicLaunchpad-{TAG}-arm64.zip",
     f"ClassicLaunchpad-{TAG}-x86_64.zip",
@@ -60,22 +61,35 @@ class PublishReleaseTests(unittest.TestCase):
                 with Path(os.environ["GH_FAKE_LOG"]).open("a", encoding="utf-8") as log:
                     log.write(json.dumps({"command": command, "args": args}) + "\\n")
                 config = json.loads(Path(os.environ["GH_FAKE_CONFIG"]).read_text())
-                failure = config.get("exit_codes", {}).get(command)
+                query = args[args.index("--json") + 1] if command == "view" and "--json" in args else None
+                failures = config.get("exit_codes", {})
+                failure = failures.get(f"view_{query}", failures.get(command))
                 if failure:
                     print(f"simulated {command} failure", file=sys.stderr)
                     sys.exit(failure)
                 if command == "view":
-                    status = config["release_status"]
-                    if status == "missing":
-                        print("release not found", file=sys.stderr)
-                        sys.exit(1)
-                    if status == "draft":
-                        print("true")
-                    elif status == "published":
-                        print("false")
+                    if query == "databaseId":
+                        release_id = config.get("release_id")
+                        print("" if release_id is None else release_id)
+                    elif query == "isDraft":
+                        status = config["release_status"]
+                        if status == "missing":
+                            print("release not found", file=sys.stderr)
+                            sys.exit(1)
+                        if status == "draft":
+                            print("true")
+                        elif status == "published":
+                            print("false")
+                        else:
+                            print(status)
                     else:
-                        print(status)
+                        print(f"unexpected fake gh view query: {query!r}", file=sys.stderr)
+                        sys.exit(99)
                 elif command == "api":
+                    expected = f"repos/{os.environ['GH_REPO']}/releases/{config.get('release_id')}"
+                    if args != ["api", expected]:
+                        print(f"expected release ID endpoint: {expected}", file=sys.stderr)
+                        sys.exit(98)
                     print(json.dumps(config["api_response"]))
                 elif command not in {"create", "upload", "edit"}:
                     print(f"unexpected fake gh command: {args!r}", file=sys.stderr)
@@ -97,6 +111,7 @@ class PublishReleaseTests(unittest.TestCase):
     def configuration(self, release_status="draft"):
         return {
             "release_status": release_status,
+            "release_id": RELEASE_ID,
             "api_response": {
                 "draft": release_status != "published",
                 "assets": [
@@ -140,13 +155,16 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, "invalid or failed uploads must not be published")
         self.assertNotIn("edit", self.commands())
 
-    def assert_upload_and_publish_arguments(self):
+    def assert_upload_and_publish_arguments(self, release_id=RELEASE_ID):
         calls = {call["command"]: call["args"] for call in self.calls()}
         self.assertEqual(calls["upload"], [
             "release", "upload", TAG, "--repo", REPOSITORY, "--clobber",
             *(f"build/release/{name}" for name in ASSET_NAMES),
         ])
-        self.assertEqual(calls["api"], ["api", f"repos/{REPOSITORY}/releases/tags/{TAG}"])
+        self.assertEqual(calls["view"], [
+            "release", "view", TAG, "--repo", REPOSITORY, "--json", "databaseId", "--jq", ".databaseId",
+        ])
+        self.assertEqual(calls["api"], ["api", f"repos/{REPOSITORY}/releases/{release_id}"])
         self.assertEqual(calls["edit"], [
             "release", "edit", TAG, "--repo", REPOSITORY, "--draft=false", "--latest",
         ])
@@ -154,9 +172,9 @@ class PublishReleaseTests(unittest.TestCase):
     def test_new_release_is_drafted_uploaded_verified_then_published(self):
         result = self.publish(self.configuration("missing"))
         self.assert_success(result)
-        self.assertEqual(self.commands(), ["view", "create", "upload", "api", "edit"])
+        self.assertEqual(self.commands(), ["view", "create", "upload", "view", "api", "edit"])
         calls = {call["command"]: call["args"] for call in self.calls()}
-        self.assertEqual(calls["view"], [
+        self.assertEqual(self.calls()[0]["args"], [
             "release", "view", TAG, "--repo", REPOSITORY, "--json", "isDraft", "--jq", ".isDraft",
         ])
         self.assertEqual(calls["create"], [
@@ -178,8 +196,31 @@ class PublishReleaseTests(unittest.TestCase):
     def test_existing_draft_resumes_without_creating_another_release(self):
         result = self.publish()
         self.assert_success(result)
-        self.assertEqual(self.commands(), ["view", "upload", "api", "edit"])
+        self.assertEqual(self.commands(), ["view", "upload", "view", "api", "edit"])
         self.assert_upload_and_publish_arguments()
+
+    def test_release_asset_query_uses_the_id_returned_by_github(self):
+        configuration = self.configuration()
+        configuration["release_id"] = 987654321
+        result = self.publish(configuration)
+        self.assert_success(result)
+        self.assert_upload_and_publish_arguments(release_id=987654321)
+
+    def test_invalid_or_missing_release_id_does_not_query_assets_or_publish(self):
+        for release_id in ("not-a-number", "411/776261", "", None):
+            with self.subTest(release_id=release_id):
+                configuration = self.configuration()
+                configuration["release_id"] = release_id
+                result = self.publish(configuration)
+                self.assert_draft_preserved(result)
+                self.assertEqual(self.commands(), ["view", "upload", "view"])
+
+    def test_failed_release_id_lookup_does_not_query_assets_or_publish(self):
+        configuration = self.configuration()
+        configuration["exit_codes"] = {"view_databaseId": 25}
+        result = self.publish(configuration)
+        self.assert_draft_preserved(result)
+        self.assertEqual(self.commands(), ["view", "upload", "view"])
 
     def test_published_release_preserves_existing_assets_without_any_write(self):
         configuration = self.configuration("published")
@@ -188,7 +229,7 @@ class PublishReleaseTests(unittest.TestCase):
             asset.update(size=asset["size"] + 17, digest="sha256:" + "0" * 64)
         result = self.publish(configuration)
         self.assert_success(result)
-        self.assertEqual(self.commands(), ["view", "api"])
+        self.assertEqual(self.commands(), ["view", "view", "api"])
 
     def test_upload_failure_does_not_verify_or_publish_a_partial_release(self):
         configuration = self.configuration("missing")
@@ -202,7 +243,7 @@ class PublishReleaseTests(unittest.TestCase):
         configuration["exit_codes"] = {"api": 24}
         result = self.publish(configuration)
         self.assert_draft_preserved(result)
-        self.assertEqual(self.commands(), ["view", "upload", "api"])
+        self.assertEqual(self.commands(), ["view", "upload", "view", "api"])
 
     def test_missing_or_incomplete_remote_asset_does_not_publish(self):
         for index, name in enumerate(ASSET_NAMES):
@@ -218,7 +259,7 @@ class PublishReleaseTests(unittest.TestCase):
                         remote[index]["size"] = 0
                     result = self.publish(configuration)
                     self.assert_draft_preserved(result)
-                    self.assertEqual(self.commands(), ["view", "upload", "api"])
+                    self.assertEqual(self.commands(), ["view", "upload", "view", "api"])
 
     def test_remote_size_mismatch_does_not_publish(self):
         for index, name in enumerate(ASSET_NAMES):
@@ -249,14 +290,14 @@ class PublishReleaseTests(unittest.TestCase):
                         asset["digest"] = digest
                 result = self.publish(configuration)
                 self.assert_success(result)
-                self.assertEqual(self.commands(), ["view", "upload", "api", "edit"])
+                self.assertEqual(self.commands(), ["view", "upload", "view", "api", "edit"])
 
     def test_incomplete_published_release_is_reported_without_any_write(self):
         configuration = self.configuration("published")
         configuration["api_response"]["assets"].pop()
         result = self.publish(configuration)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.commands(), ["view", "api"])
+        self.assertEqual(self.commands(), ["view", "view", "api"])
 
     def test_unknown_release_state_fails_without_any_write(self):
         configuration = self.configuration("unknown")
