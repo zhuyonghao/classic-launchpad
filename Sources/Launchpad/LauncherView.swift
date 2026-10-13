@@ -30,101 +30,150 @@ struct LauncherView: View {
 
     var body: some View {
         if session.isPresented {
-        GeometryReader { geometry in
-            let iconSize = min(100.0, max(56.0, (geometry.size.height - 225) / CGFloat(session.rows) - 33))
-            let gridWidth = min(1340.0, geometry.size.width - 110)
-            let cellWidth = gridWidth / CGFloat(session.columns)
-            let rowHeight = max(iconSize + 35, (geometry.size.height - 225) / CGFloat(session.rows))
-            ZStack {
-                wallpaper(size: geometry.size)
-                    .contentShape(Rectangle())
-                    .onTapGesture { returnFromBlank() }
-                    .onDrop(of: [launcherItemType], delegate: BackgroundDrop(store: store, session: session))
-
-                VStack(spacing: 0) {
-                    searchBar
-                        .padding(.top, max(38, geometry.safeAreaInsets.top + 10))
-                        .opacity(session.folderID == nil ? 1 : 0)
-                        .allowsHitTesting(session.folderID == nil)
-                    Spacer(minLength: 28)
-                    if let folder = openedFolder {
-                        folderPanel(folder, iconSize: iconSize, gridWidth: gridWidth, rowHeight: rowHeight)
-                    } else if visibleItems.isEmpty {
-                        emptyState
-                            .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows))
-                    } else {
-                        pagedGrid(iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
-                            .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows), alignment: .top)
-                    }
-                    Spacer(minLength: 18)
-                    pageDots
-                    Text(session.draggingID != nil ? dragHint : (session.showsHint ? "四指张开收起 · 左右轻扫或按 ⌘ ← → 翻页" : " "))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(session.draggingID != nil ? 0.85 : 0.45))
-                        .padding(.top, 13)
-                        .padding(.bottom, 49)
-                        .allowsHitTesting(false)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { Color.clear.contentShape(Rectangle()).onTapGesture { returnFromBlank() } }
-
-                if let message = store.errorMessage {
-                    VStack {
-                        Spacer()
-                        HStack(spacing: 12) {
-                            Image(systemName: "exclamationmark.circle")
-                            Text(message).font(.system(size: 13)).lineLimit(3)
-                            Button { store.errorMessage = nil } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.plain).accessibilityLabel("关闭提示")
-                        }
-                        .padding(14)
-                        .foregroundStyle(.white)
-                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
-                        .frame(maxWidth: 600)
-                        .padding(.bottom, 100)
-                    }
-                }
-            }
-            .overlay(alignment: .leading) {
-                edgeTarget(-1).frame(width: 36).allowsHitTesting(session.draggingID != nil && session.editingFolderID == nil)
-            }
-            .overlay(alignment: .trailing) {
-                edgeTarget(1).frame(width: 36).allowsHitTesting(session.draggingID != nil && session.editingFolderID == nil)
-            }
-            .preferredColorScheme(.dark)
-            .onAppear { configureGrid(geometry.size); searchFocused = true }
-            .onChange(of: geometry.size) { _, size in configureGrid(size) }
-        }
-        .onChange(of: session.query) { _, query in session.page = query.isEmpty ? session.homePage : 0; session.selectedID = nil }
-        .onChange(of: session.page) { _, _ in session.rememberPage() }
-        .onChange(of: session.activationID) { _, _ in searchFocused = true }
-        .onChange(of: session.folderID) { _, id in
-            searchFocused = id == nil
-        }
-        .onChange(of: store.items) { _, items in
-            if let id = session.editingFolderID, !items.contains(where: { $0.id == id && $0.isFolder }) { finishRenaming() }
-            if let id = session.folderID, !items.contains(where: { $0.id == id }) {
-                session.folderID = nil
-                session.page = session.homePage
-            }
-            session.page = min(session.page, pageCount - 1)
-        }
-        .task(id: [session.draggingID ?? "", session.dragPageDirection.map(String.init) ?? ""]) {
-            guard let direction = session.dragPageDirection, let dragID = session.draggingID else { return }
-            do { try await Task.sleep(for: .milliseconds(550)) } catch { return }
-            while !Task.isCancelled && session.draggingID == dragID && session.dragPageDirection == direction {
-                session.dropTarget = nil
-                session.turnPage(direction, store: store)
-                do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
-            }
-        }
-        .task {
-            do { try await Task.sleep(for: .seconds(10)) } catch { return }
-            withAnimation { session.showsHint = false }
-        }
+            presentedLauncher
         } else {
             Color.clear
         }
+    }
+
+    private var presentedLauncher: some View {
+        launcherWithContentUpdates
+            .task(id: dragPageTaskID) { await turnPagesWhileDragging() }
+            .task { await hideUsageHintAfterDelay() }
+    }
+
+    private var launcherWithContentUpdates: some View {
+        launcherWithSessionUpdates
+            .onChange(of: session.folderID) { _, id in searchFocused = id == nil }
+            .onChange(of: store.items) { _, items in updateVisibleItems(items) }
+    }
+
+    private var launcherWithSessionUpdates: some View {
+        GeometryReader { geometry in
+            launcherLayout(in: geometry)
+        }
+        .onChange(of: session.query) { _, query in
+            session.page = query.isEmpty ? session.homePage : 0
+            session.selectedID = nil
+        }
+        .onChange(of: session.page) { _, _ in session.rememberPage() }
+        .onChange(of: session.activationID) { _, _ in searchFocused = true }
+    }
+
+    private func launcherLayout(in geometry: GeometryProxy) -> some View {
+        let iconSize: CGFloat = min(100, max(56, (geometry.size.height - 225) / CGFloat(session.rows) - 33))
+        let gridWidth: CGFloat = min(1340, geometry.size.width - 110)
+        let cellWidth: CGFloat = gridWidth / CGFloat(session.columns)
+        let rowHeight: CGFloat = max(iconSize + 35, (geometry.size.height - 225) / CGFloat(session.rows))
+        return launcherScene(size: geometry.size, topInset: geometry.safeAreaInsets.top,
+                             iconSize: iconSize, gridWidth: gridWidth, cellWidth: cellWidth, rowHeight: rowHeight)
+            .overlay(alignment: .leading) { pageEdgeOverlay(-1) }
+            .overlay(alignment: .trailing) { pageEdgeOverlay(1) }
+            .preferredColorScheme(.dark)
+            .onAppear { configureGrid(geometry.size); searchFocused = true }
+            .onChange(of: geometry.size) { _, size in configureGrid(size) }
+    }
+
+    private func launcherScene(size: CGSize, topInset: CGFloat, iconSize: CGFloat,
+                               gridWidth: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
+        ZStack {
+            wallpaper(size: size)
+                .contentShape(Rectangle())
+                .onTapGesture { returnFromBlank() }
+                .onDrop(of: [launcherItemType], delegate: BackgroundDrop(store: store, session: session))
+            launcherContent(topInset: topInset, iconSize: iconSize,
+                            gridWidth: gridWidth, cellWidth: cellWidth, rowHeight: rowHeight)
+            if let message = store.errorMessage { errorBanner(message) }
+        }
+    }
+
+    private func launcherContent(topInset: CGFloat, iconSize: CGFloat,
+                                 gridWidth: CGFloat, cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            searchBar
+                .padding(.top, max(38, topInset + 10))
+                .opacity(session.folderID == nil ? 1 : 0)
+                .allowsHitTesting(session.folderID == nil)
+            Spacer(minLength: 28)
+            launcherItems(iconSize: iconSize, gridWidth: gridWidth, cellWidth: cellWidth, rowHeight: rowHeight)
+            Spacer(minLength: 18)
+            pageDots
+            usageHint
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { Color.clear.contentShape(Rectangle()).onTapGesture { returnFromBlank() } }
+    }
+
+    @ViewBuilder private func launcherItems(iconSize: CGFloat, gridWidth: CGFloat,
+                                            cellWidth: CGFloat, rowHeight: CGFloat) -> some View {
+        if let folder = openedFolder {
+            folderPanel(folder, iconSize: iconSize, gridWidth: gridWidth, rowHeight: rowHeight)
+        } else if visibleItems.isEmpty {
+            emptyState.frame(width: gridWidth, height: rowHeight * CGFloat(session.rows))
+        } else {
+            pagedGrid(iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight)
+                .frame(width: gridWidth, height: rowHeight * CGFloat(session.rows), alignment: .top)
+        }
+    }
+
+    private var usageHint: some View {
+        Text(session.draggingID != nil ? dragHint : (session.showsHint ? "四指张开收起 · 左右轻扫或按 ⌘ ← → 翻页" : " "))
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.white.opacity(session.draggingID != nil ? 0.85 : 0.45))
+            .padding(.top, 13)
+            .padding(.bottom, 49)
+            .allowsHitTesting(false)
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.circle")
+                Text(message).font(.system(size: 13)).lineLimit(3)
+                Button { store.errorMessage = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).accessibilityLabel("关闭提示")
+            }
+            .padding(14)
+            .foregroundStyle(.white)
+            .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: 600)
+            .padding(.bottom, 100)
+        }
+    }
+
+    private func pageEdgeOverlay(_ direction: Int) -> some View {
+        edgeTarget(direction)
+            .frame(width: 36)
+            .allowsHitTesting(session.draggingID != nil && session.editingFolderID == nil)
+    }
+
+    private var dragPageTaskID: [String] {
+        [session.draggingID ?? "", session.dragPageDirection.map(String.init) ?? ""]
+    }
+
+    @MainActor private func turnPagesWhileDragging() async {
+        guard let direction = session.dragPageDirection, let dragID = session.draggingID else { return }
+        do { try await Task.sleep(for: .milliseconds(550)) } catch { return }
+        while !Task.isCancelled && session.draggingID == dragID && session.dragPageDirection == direction {
+            session.dropTarget = nil
+            session.turnPage(direction, store: store)
+            do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
+        }
+    }
+
+    @MainActor private func hideUsageHintAfterDelay() async {
+        do { try await Task.sleep(for: .seconds(10)) } catch { return }
+        withAnimation { session.showsHint = false }
+    }
+
+    private func updateVisibleItems(_ items: [LauncherItem]) {
+        if let id = session.editingFolderID, !items.contains(where: { $0.id == id && $0.isFolder }) { finishRenaming() }
+        if let id = session.folderID, !items.contains(where: { $0.id == id }) {
+            session.folderID = nil
+            session.page = session.homePage
+        }
+        session.page = min(session.page, pageCount - 1)
     }
 
     private func configureGrid(_ size: CGSize) {
