@@ -45,9 +45,18 @@ enum LauncherWallpaperCache {
         lock.unlock()
     }
 
-    static func image(for url: URL, size: NSSize) -> NSImage? {
+    private static func key(for url: URL, size: NSSize) -> NSString {
         let revision = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate?.timeIntervalSince1970 ?? 0
-        let key = "\(url.path)|\(revision)|\(Int(size.width))x\(Int(size.height))" as NSString
+        return "\(url.path)|\(revision)|\(Int(size.width))x\(Int(size.height))" as NSString
+    }
+
+    static func cachedImage(for url: URL, size: NSSize) -> NSImage? {
+        images.object(forKey: key(for: url, size: size))
+    }
+
+    static func image(for url: URL, size: NSSize) -> NSImage? {
+        let key = key(for: url, size: size)
+        if let image = images.object(forKey: key) { return image }
         lock.lock()
         defer { lock.unlock() }
         if let image = images.object(forKey: key) { return image }

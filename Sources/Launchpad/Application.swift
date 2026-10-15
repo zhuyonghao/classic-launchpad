@@ -102,6 +102,20 @@ final class LauncherSession: ObservableObject {
         return store.search(query).map { LauncherItem(id: $0.id, name: $0.name, appIDs: [$0.id], isFolder: false) }
     }
 
+    func presentationApps(_ store: LauncherStore) -> [LauncherApp] {
+        let items = allItems(store)
+        let lastPage = max(0, (items.count - 1) / pageSize)
+        let currentPage = min(max(0, page), lastPage)
+        var seen = Set<String>()
+        return items.dropFirst(currentPage * pageSize).prefix(pageSize).flatMap { item -> [LauncherApp] in
+            let ids = item.isFolder ? Array(item.appIDs.prefix(9)) : Array(item.appIDs.prefix(1))
+            return ids.compactMap { id -> LauncherApp? in
+                guard seen.insert(id).inserted else { return nil }
+                return store.app(for: id)
+            }
+        }
+    }
+
     func turnPage(_ delta: Int, store: LauncherStore) {
         let count = max(1, Int(ceil(Double(allItems(store).count) / Double(pageSize))))
         page = max(0, min(count - 1, page + delta))
@@ -315,15 +329,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showLauncher() {
         guard window != nil else { return }
+        session.restorePresentation()
+        let request = UUID()
+        presentationRequest = request
+        wallpaperRequest = request
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main
         if let screen {
             let frame = isUITest ? NSRect(x: screen.visibleFrame.midX - 510, y: screen.visibleFrame.midY - 355, width: 1020, height: 710) : screen.frame
             window.setFrame(frame, display: true)
+            let contentSize = window.contentLayoutRect.size
+            session.columns = contentSize.width < 900 ? 5 : 7
+            session.rows = contentSize.height < 680 ? 4 : 5
+            session.page = min(session.homePage, max(0, (store.items.count - 1) / session.pageSize))
             if let url = NSWorkspace.shared.desktopImageURL(for: screen) {
-                let request = UUID()
-                wallpaperRequest = request
                 let size = frame.size
+                session.wallpaper = LauncherWallpaperCache.cachedImage(for: url, size: size)
                 DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                     let wallpaper = LauncherWallpaperCache.image(for: url, size: size)
                     DispatchQueue.main.async { [weak self] in
@@ -331,22 +352,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         self.session.wallpaper = wallpaper
                     }
                 }
+            } else {
+                session.wallpaper = nil
             }
         }
-        let request = UUID()
-        presentationRequest = request
-        let apps = store.apps
+        prepareLauncher(request: request)
+    }
+
+    private func prepareLauncher(request: UUID) {
+        // Reopening a prepared page takes the synchronous path. A cold page
+        // only waits for its own icons (including folder previews), not every app.
+        let apps = session.presentationApps(store)
+        if LauncherIconCache.areCached(apps) {
+            presentPreparedLauncher()
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             for app in apps { autoreleasepool { _ = app.icon } }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.presentationRequest == request else { return }
+                // Discovery may reconcile the layout while icons are warming.
+                // Prepare the resulting page too, rather than falling back to
+                // synchronous icon reads while SwiftUI constructs it.
+                guard apps == self.session.presentationApps(self.store) else {
+                    self.prepareLauncher(request: request)
+                    return
+                }
                 self.presentPreparedLauncher()
             }
         }
     }
 
     private func presentPreparedLauncher() {
-        session.restorePresentation()
         session.isPresented = true
         session.activationID = UUID()
         if !isUITest {
@@ -355,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        store.refresh()
+        store.refreshIfNeeded()
     }
 
     func hideLauncher() {
@@ -368,14 +405,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         session.editingFolderID = nil
         session.commitFolderRename = {}
         session.endDrag()
-        session.wallpaper = nil
-        let cleanupRequest = presentationRequest
-        // Let SwiftUI release image references before evicting decoded caches.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self, !self.session.isPresented, self.presentationRequest == cleanupRequest else { return }
-            LauncherIconCache.removeAll()
-            DispatchQueue.global(qos: .utility).async { LauncherWallpaperCache.removeAll() }
-        }
+        // Release the page views, but keep bounded image caches warm while idle.
+        // NSCache can evict them under memory pressure; reopening then prepares
+        // just the visible page again. The wallpaper cache holds only one image.
         restorePresentation()
         if NSApp.isActive { NSApp.hide(nil) }
     }
@@ -466,7 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.14",
+            .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.15",
             .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
