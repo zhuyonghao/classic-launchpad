@@ -7,9 +7,18 @@ struct LauncherApp: Identifiable, Hashable {
     let name: String
     let url: URL
     let bundleIdentifier: String
+    let iconRevision: TimeInterval
+
+    init(id: String, name: String, url: URL, bundleIdentifier: String, iconRevision: TimeInterval = 0) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.bundleIdentifier = bundleIdentifier
+        self.iconRevision = iconRevision
+    }
 
     var icon: NSImage {
-        LauncherIconCache.image(for: url)
+        LauncherIconCache.image(for: url, revision: iconRevision)
     }
 }
 
@@ -23,9 +32,24 @@ enum LauncherIconCache {
         lock.unlock()
     }
 
-    static func image(for url: URL) -> NSImage {
+    private static func key(for url: URL, revision: TimeInterval) -> NSString {
+        "\(url.standardizedFileURL.path)|\(revision)" as NSString
+    }
+
+    static func cachedImage(for url: URL, revision: TimeInterval = 0) -> NSImage? {
+        images.object(forKey: key(for: url, revision: revision))
+    }
+
+    static func areCached(_ apps: [LauncherApp]) -> Bool {
+        apps.allSatisfy { cachedImage(for: $0.url, revision: $0.iconRevision) != nil }
+    }
+
+    static func image(for url: URL, revision: TimeInterval = 0) -> NSImage {
         let path = url.standardizedFileURL.path
-        let key = path as NSString
+        let key = key(for: url, revision: revision)
+        // NSCache supports concurrent lookups. Warm reads must not wait behind
+        // a different icon being rasterized by background page preparation.
+        if let cached = images.object(forKey: key) { return cached }
         // Serialize cache misses so concurrent readers receive the same image.
         lock.lock()
         defer { lock.unlock() }
@@ -54,8 +78,10 @@ final class LauncherStore: ObservableObject {
     @Published var errorMessage: String?
 
     private let layoutURL: URL
+    private let catalogURL: URL
     private var searchIndex: [String: String] = [:]
     private var appsByID: [String: LauncherApp] = [:]
+    private var lastRefreshUptime: TimeInterval?
 
     init(automaticallyRefresh: Bool = true) {
         let environment = ProcessInfo.processInfo.environment
@@ -68,6 +94,7 @@ final class LauncherStore: ObservableObject {
             directory = support.appendingPathComponent("com.local.ClassicLaunchpad", isDirectory: true)
         }
         layoutURL = directory.appendingPathComponent("layout.json")
+        catalogURL = directory.appendingPathComponent("catalog.json")
         if FileManager.default.fileExists(atPath: layoutURL.path) {
             do {
                 let saved = try JSONDecoder().decode(PersistedLayout.self, from: Data(contentsOf: layoutURL))
@@ -80,34 +107,58 @@ final class LauncherStore: ObservableObject {
                 errorMessage = "无法读取已保存的布局，将使用默认布局。"
             }
         }
-        if automaticallyRefresh { refresh() }
+        if automaticallyRefresh {
+            // The previous catalog is enough to draw the launcher immediately;
+            // discovery can reconcile installed or removed apps in the background.
+            if let cached = PersistedCatalog.load(from: catalogURL) {
+                applyCatalog(cached)
+            }
+            refresh()
+        }
+    }
+
+    func refreshIfNeeded() {
+        if let lastRefreshUptime,
+           ProcessInfo.processInfo.systemUptime - lastRefreshUptime < 60 { return }
+        refresh()
     }
 
     func refresh() {
         guard !isScanning else { return }
+        lastRefreshUptime = ProcessInfo.processInfo.systemUptime
         isScanning = true
+        let catalogURL = catalogURL
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = AppCatalogScanner.scan()
-            // Decode and rasterize every page's icons before publishing the
-            // catalog, rather than doing file/icon work during a page animation.
-            for app in result.apps { autoreleasepool { _ = app.icon } }
+            // Transliteration is relatively expensive. Prepare the search lookup
+            // off the main thread without waiting for every page's icons to load.
+            let catalog = PreparedCatalog(apps: result.apps)
+            if !result.apps.isEmpty {
+                PersistedCatalog.save(catalog, to: catalogURL)
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.apps = result.apps
-                self.appsByID = Dictionary(uniqueKeysWithValues: result.apps.map { ($0.id, $0) })
-                self.searchIndex = Dictionary(uniqueKeysWithValues: result.apps.map {
-                    ($0.id, AppSearch.index(for: $0))
-                })
-                if self.items.isEmpty {
-                    self.items = self.defaultLayout()
-                } else {
-                    self.reconcileLayout()
+                // A transient empty scan must retain both the visible catalog
+                // and the saved arrangement from the last successful discovery.
+                if !result.apps.isEmpty {
+                    self.applyCatalog(catalog)
+                    self.saveLayout()
                 }
                 self.isScanning = false
                 if let issue = result.issue { self.errorMessage = issue }
-                // A transient scan failure must not erase the user's saved arrangement.
-                if !result.apps.isEmpty { self.saveLayout() }
             }
+        }
+    }
+
+    private func applyCatalog(_ catalog: PreparedCatalog) {
+        appsByID = catalog.appsByID
+        searchIndex = catalog.searchIndex
+        guard apps != catalog.apps else { return }
+        apps = catalog.apps
+        if items.isEmpty {
+            items = defaultLayout()
+        } else {
+            reconcileLayout()
         }
     }
 
@@ -316,6 +367,70 @@ private struct PersistedLayout: Codable {
     let items: [LauncherItem]
 }
 
+private struct PreparedCatalog {
+    let apps: [LauncherApp]
+    let appsByID: [String: LauncherApp]
+    let searchIndex: [String: String]
+
+    init(apps: [LauncherApp], searchIndex: [String: String]? = nil) {
+        self.apps = apps
+        appsByID = Dictionary(uniqueKeysWithValues: apps.map { ($0.id, $0) })
+        self.searchIndex = searchIndex ?? Dictionary(uniqueKeysWithValues: apps.map {
+            ($0.id, AppSearch.index(for: $0))
+        })
+    }
+}
+
+private struct PersistedCatalog: Codable {
+    // Bump when persisted app metadata or search normalization changes.
+    private static let currentVersion = 1
+
+    let version: Int
+    let apps: [Entry]
+
+    struct Entry: Codable {
+        let name: String
+        let path: String
+        let bundleIdentifier: String
+        let searchIndex: String
+        let iconRevision: TimeInterval?
+    }
+
+    static func load(from url: URL) -> PreparedCatalog? {
+        guard let data = try? Data(contentsOf: url),
+              let saved = try? JSONDecoder().decode(Self.self, from: data),
+              saved.version == currentVersion else { return nil }
+        var seenPaths = Set<String>()
+        var seenBundles = Set<String>()
+        var apps: [LauncherApp] = []
+        var searchIndex: [String: String] = [:]
+        for entry in saved.apps {
+            guard entry.path.hasPrefix("/"),
+                  FileManager.default.fileExists(atPath: entry.path),
+                  seenPaths.insert(entry.path).inserted,
+                  seenBundles.insert(entry.bundleIdentifier).inserted else { continue }
+            let app = LauncherApp(id: entry.path, name: entry.name,
+                                  url: URL(fileURLWithPath: entry.path), bundleIdentifier: entry.bundleIdentifier,
+                                  iconRevision: entry.iconRevision ?? 0)
+            apps.append(app)
+            searchIndex[app.id] = entry.searchIndex
+        }
+        return apps.isEmpty ? nil : PreparedCatalog(apps: apps, searchIndex: searchIndex)
+    }
+
+    static func save(_ catalog: PreparedCatalog, to url: URL) {
+        let saved = Self(version: currentVersion, apps: catalog.apps.map { app in
+            Entry(name: app.name, path: app.url.path, bundleIdentifier: app.bundleIdentifier,
+                  searchIndex: catalog.searchIndex[app.id] ?? "", iconRevision: app.iconRevision)
+        })
+        // This optional cache should never prevent discovery or layout saving.
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(saved).write(to: url, options: .atomic)
+        } catch { }
+    }
+}
+
 enum AppCatalogScanner {
     struct Result {
         var apps: [LauncherApp]
@@ -355,13 +470,18 @@ enum AppCatalogScanner {
             if name.lowercased().hasSuffix(".app") { name = String(name.dropLast(4)) }
             seenPaths.insert(standardized.path)
             seenBundles.insert(identifier)
-            result.append(LauncherApp(id: standardized.path, name: name, url: standardized, bundleIdentifier: identifier))
+            // A replaced bundle can keep its path and name. Its revision makes
+            // warm icon caches update without filesystem work during rendering.
+            let iconRevision = (try? standardized.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate?.timeIntervalSince1970 ?? 0
+            result.append(LauncherApp(id: standardized.path, name: name, url: standardized,
+                                      bundleIdentifier: identifier, iconRevision: iconRevision))
         }
 
         func walk(_ directory: URL, depth: Int) {
             guard let children = try? fileManager.contentsOfDirectory(
                 at: directory,
-                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles]
             ) else { return }
             if depth == 0 { readableRoots += 1 }

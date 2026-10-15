@@ -9,11 +9,14 @@ struct LauncherView: View {
     @ObservedObject var session: LauncherSession
     @FocusState private var searchFocused: Bool
     @State private var folderNameDraft = ""
+    @State private var mountedPages = LauncherPageMountState()
 
     private var allItems: [LauncherItem] { session.allItems(store) }
     private var pageCount: Int { max(1, Int(ceil(Double(allItems.count) / Double(session.pageSize)))) }
+    private var currentPage: Int { max(0, min(session.page, pageCount - 1)) }
+    private var pageContext: LauncherPageContext { LauncherPageContext(folderID: session.folderID, query: session.query) }
     private var visibleItems: [LauncherItem] {
-        Array(allItems.dropFirst(min(session.page, pageCount - 1) * session.pageSize).prefix(session.pageSize))
+        Array(allItems.dropFirst(currentPage * session.pageSize).prefix(session.pageSize))
     }
     private var openedFolder: LauncherItem? { store.items.first { $0.id == session.folderID } }
     private var dragHint: String {
@@ -37,9 +40,13 @@ struct LauncherView: View {
     }
 
     private var presentedLauncher: some View {
-        launcherWithContentUpdates
+        let adjacentApps = adjacentIconApps
+        return launcherWithContentUpdates
             .task(id: dragPageTaskID) { await turnPagesWhileDragging() }
+            .task(id: adjacentApps) { await prewarmAdjacentIcons(adjacentApps) }
             .task { await hideUsageHintAfterDelay() }
+            .onAppear { recordMountedPage() }
+            .onDisappear { mountedPages.clear() }
     }
 
     private var launcherWithContentUpdates: some View {
@@ -56,8 +63,49 @@ struct LauncherView: View {
             session.page = query.isEmpty ? session.homePage : 0
             session.selectedID = nil
         }
-        .onChange(of: session.page) { _, _ in session.rememberPage() }
+        .onChange(of: session.page) { _, _ in
+            session.rememberPage()
+            recordMountedPage()
+        }
+        .onChange(of: pageContext) { _, _ in recordMountedPage() }
+        .onChange(of: session.draggingID) { _, id in
+            if id == nil { recordMountedPage() }
+        }
         .onChange(of: session.activationID) { _, _ in searchFocused = true }
+    }
+
+    private func recordMountedPage() {
+        mountedPages.visit(currentPage, in: pageContext, isDragging: session.draggingID != nil)
+    }
+
+    private var adjacentIconApps: [LauncherApp] {
+        let items = allItems
+        let current = currentPage
+        let neighbors = [current - 1, current + 1].filter { $0 >= 0 && $0 < pageCount }
+        var seen = Set<String>()
+        return neighbors.flatMap { page in
+            items.dropFirst(page * session.pageSize).prefix(session.pageSize).flatMap { item in
+                item.appIDs.prefix(item.isFolder ? 9 : 1).compactMap { store.app(for: $0) }
+            }
+        }.filter { seen.insert($0.id).inserted }
+    }
+
+    @MainActor private func prewarmAdjacentIcons(_ apps: [LauncherApp]) async {
+        guard !apps.isEmpty else { return }
+        // Let the current page reach the screen before preparing the next swipe.
+        do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
+        guard session.isPresented, !Task.isCancelled else { return }
+        let warmup = Task.detached(priority: .utility) {
+            for app in apps {
+                guard !Task.isCancelled else { return }
+                autoreleasepool { _ = app.icon }
+            }
+        }
+        await withTaskCancellationHandler(operation: {
+            await warmup.value
+        }, onCancel: {
+            warmup.cancel()
+        })
     }
 
     private func launcherLayout(in geometry: GeometryProxy) -> some View {
@@ -239,19 +287,27 @@ struct LauncherView: View {
         let items = allItems
         let width = cellWidth * CGFloat(session.columns)
         let height = rowHeight * CGFloat(rowCount ?? session.rows)
+        let current = currentPage
+        let context = pageContext
         return HStack(alignment: .top, spacing: 0) {
             ForEach(0..<pageCount, id: \.self) { page in
-                appGrid(items: Array(items.dropFirst(page * session.pageSize).prefix(session.pageSize)),
-                        iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight, page: page, rowCount: rowCount ?? session.rows)
+                Group {
+                    if mountedPages.contains(page, currentPage: current, in: context, isDragging: session.draggingID != nil) {
+                        appGrid(items: Array(items.dropFirst(page * session.pageSize).prefix(session.pageSize)),
+                                iconSize: iconSize, cellWidth: cellWidth, rowHeight: rowHeight, page: page, rowCount: rowCount ?? session.rows)
+                    } else {
+                        Color.clear
+                    }
+                }
                     .frame(width: width, height: height, alignment: .top)
-                    .allowsHitTesting(page == session.page)
-                    .accessibilityHidden(page != session.page)
+                    .allowsHitTesting(page == current)
+                    .accessibilityHidden(page != current)
             }
         }
-        // Keep native drag surfaces mounted across page changes. Animate only
-        // this translation, not the wallpaper, labels, or application layout.
-        .offset(x: -CGFloat(min(session.page, pageCount - 1)) * width)
-        .animation(pageAnimation, value: session.page)
+        // Visited pages stay mounted for native dragging. Distant dot jumps
+        // switch directly rather than sliding through unbuilt placeholder pages.
+        .offset(x: -CGFloat(current) * width)
+        .animation(mountedPages.animatesTransition(to: current, in: context) ? pageAnimation : nil, value: current)
         .frame(width: width, height: height, alignment: .leading)
         .clipped()
     }
