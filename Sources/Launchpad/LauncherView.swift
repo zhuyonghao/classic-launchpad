@@ -205,7 +205,7 @@ struct LauncherView: View {
     }
 
     private var usageHint: some View {
-        Text(session.isSelectingApps ? "点按应用勾选 · 可跨页选择 · Esc 取消" :
+        Text(session.isSelectingApps ? "点按应用勾选 · 可跨页选择 · 点空白处退出" :
                 (session.draggingID != nil ? dragHint : (session.showsHint ? "四指张开收起 · 左右轻扫或按 ⌘ ← → 翻页" : " ")))
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.white.opacity(session.draggingID != nil ? 0.85 : 0.45))
@@ -345,7 +345,11 @@ struct LauncherView: View {
 
     private func returnFromBlank() {
         if let id = session.editingFolderID { commitFolderName(folderID: id); return }
-        if session.isSelectingApps { return }
+        if session.isSelectingApps {
+            session.cancelAppSelection()
+            searchFocused = true
+            return
+        }
         if session.folderID != nil { session.escape() }
         else { session.dismiss() }
     }
@@ -443,15 +447,9 @@ struct LauncherView: View {
                 .padding(5)
                 .background(RoundedRectangle(cornerRadius: 19).fill(merging ? Color.blue.opacity(0.3) : .white.opacity(selected ? 0.19 : 0)))
                 .overlay(RoundedRectangle(cornerRadius: 19).stroke(.white.opacity(merging ? 0.85 : (selected ? 0.45 : 0)), lineWidth: merging ? 2 : 1))
-                .overlay(alignment: .topTrailing) {
-                    if session.isSelectingApps && !item.isFolder {
-                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                            .font(.system(size: 22, weight: .semibold))
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, selected ? Color.accentColor : Color.black.opacity(0.4))
-                            .padding(2)
-                    }
-                }
+                .animation(pageAnimation, value: selected)
+                .modifier(LauncherBatchIconFeedback(id: item.id, isOrganizing: session.isSelectingApps && !item.isFolder,
+                                                    isSelected: selected, isActive: isActive))
                 .scaleEffect(merging && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 1.06 : 1)
                 .animation(pageAnimation, value: merging)
                 Text(merging ? (item.isFolder ? "加入“\(item.name)”" : "创建文件夹") : item.name)
