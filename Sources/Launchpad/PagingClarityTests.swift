@@ -96,6 +96,9 @@ func runPagingClarityTests() async throws {
     viewport.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(50))
     _ = viewport.beginTracking(page: 0)
+    // This fixture advances animation time explicitly. Prevent real display
+    // callbacks from finishing it while SwiftUI renders on a slower CI host.
+    viewport.frameLink?.isPaused = true
     viewport.update(content: grid(prepared), page: 0, width: 400, height: 400, count: 2, animated: false, preparedPages: [0, 1])
     viewport.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(30))
@@ -109,7 +112,7 @@ func runPagingClarityTests() async throws {
     viewport.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(30))
     try check(prepared.renders == countBeforeMovement && deferred.renders == 0,
-              "two full icon grids and their shadows are not rebuilt during release animation")
+              "two full icon grids and their shadows are not rebuilt during release animation (prepared: \(countBeforeMovement) -> \(prepared.renders), deferred: \(deferred.renders), moving: \(viewport.isMoving))")
     let beforeRegrab = viewport.displayedPosition
     _ = viewport.beginTracking(page: viewport.page)
     viewport.track(page: viewport.page, offset: beforeRegrab + CGFloat(viewport.page) * 400 + 8)
