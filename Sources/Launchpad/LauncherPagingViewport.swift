@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class LauncherPagingViewport: NSView {
     private let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+    private let reduceMotion: () -> Bool
     private(set) var page = 0
     private var pageWidth: CGFloat = 0
     private var stripSize = NSSize.zero
@@ -24,7 +25,8 @@ final class LauncherPagingViewport: NSView {
 
     override var isFlipped: Bool { true }
 
-    init() {
+    init(reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }) {
+        self.reduceMotion = reduceMotion
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -101,7 +103,7 @@ final class LauncherPagingViewport: NSView {
         motion = nil
         self.page = page
         let target = -CGFloat(page) * pageWidth
-        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+        guard animated, !reduceMotion(),
               abs(target - from) > 0.25 else {
             setPosition(target)
             stop()

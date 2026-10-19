@@ -23,7 +23,8 @@ func runPagingClarityTests() async throws {
 
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 100),
                           styleMask: .borderless, backing: .buffered, defer: false)
-    let viewport = LauncherPagingViewport()
+    // Cover animation independently of the host's accessibility preferences.
+    let viewport = LauncherPagingViewport(reduceMotion: { false })
     window.contentView = viewport
     let scale = window.backingScaleFactor
     func stripes() -> some View {
@@ -128,6 +129,16 @@ func runPagingClarityTests() async throws {
     viewport.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(30))
     try check(deferred.renders > 0, "the latest page content and hit regions are applied after movement ends")
+
+    let reducedMotionViewport = LauncherPagingViewport(reduceMotion: { true })
+    window.contentView = reducedMotionViewport
+    reducedMotionViewport.update(content: grid(initial), page: 0, width: 400, height: 400, count: 2, animated: false)
+    _ = reducedMotionViewport.beginTracking(page: 0)
+    reducedMotionViewport.track(page: 0, offset: -20)
+    reducedMotionViewport.settle(to: 1, velocity: -700)
+    try check(reducedMotionViewport.displayedPosition == -400 && !reducedMotionViewport.isMoving &&
+              reducedMotionViewport.frameLink == nil,
+              "Reduce Motion selects the final page immediately and releases the display link")
     window.orderOut(nil)
     print("PASS: moving-frame edge sharpness, continuous input with pixel-aligned output, time-based settling, and two full 7x5 grids without mid-animation rebuilds")
 }
