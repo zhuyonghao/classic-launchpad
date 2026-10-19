@@ -265,6 +265,36 @@ final class LauncherStore: ObservableObject {
         saveLayout()
     }
 
+    /// Batch selection follows the saved layout order, including across pages.
+    @discardableResult
+    func createFolder(appIDs: Set<String>) -> String? {
+        guard appIDs.count > 1 else { return nil }
+        let selected = items.filter { appIDs.contains($0.id) && !$0.isFolder }
+        guard selected.count == appIDs.count,
+              selected.allSatisfy({ $0.appIDs == [$0.id] && app(for: $0.id) != nil }),
+              let first = selected.first else { return nil }
+        let folder = LauncherItem(id: UUID().uuidString, name: "文件夹",
+                                  appIDs: selected.map(\.id), isFolder: true)
+        items = items.compactMap { item in
+            if item.id == first.id { return folder }
+            return appIDs.contains(item.id) ? nil : item
+        }
+        saveLayout()
+        return folder.id
+    }
+
+    @discardableResult
+    func dissolveFolder(_ id: String) -> Bool {
+        guard let index = items.firstIndex(where: { $0.id == id && $0.isFolder }) else { return false }
+        let members = items[index].appIDs.compactMap { app(for: $0).map(Self.item(for:)) }
+        guard members.count == items[index].appIDs.count else { return false }
+        var updated = items
+        updated.replaceSubrange(index...index, with: members)
+        items = updated
+        saveLayout()
+        return true
+    }
+
     func moveAppOutOfFolder(appID: String, folderID: String) {
         guard let folderIndex = items.firstIndex(where: { $0.id == folderID && $0.isFolder }),
               items[folderIndex].appIDs.contains(appID), let app = app(for: appID) else { return }

@@ -24,6 +24,7 @@ func runSmokeTests() async {
         try runDragFeedbackTests()
         try runFolderInteractionTests()
         try await runFolderPresentationTests()
+        try await runFolderOrganizationTests()
         try await runPagingTests()
         try await runPagingClarityTests()
         try runPagingContentCacheTests()

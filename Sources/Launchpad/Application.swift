@@ -56,6 +56,7 @@ final class LauncherSession: ObservableObject {
     func restorePresentation() {
         commitFolderRename()
         endDrag()
+        cancelAppSelection()
         query = ""
         folderID = nil
         editingFolderID = nil
@@ -65,6 +66,8 @@ final class LauncherSession: ObservableObject {
     }
     @Published var folderID: String? { didSet { if folderID != oldValue { rootPaging.cancel(); folderPaging.cancel() } } }
     @Published var selectedID: String?
+    @Published private(set) var isSelectingApps = false
+    @Published private(set) var selectedAppIDs: Set<String> = []
     @Published var draggingID: String?
     @Published private(set) var dragSourceFolder: LauncherItem?
     private(set) var dragSourcePage = 0
@@ -102,9 +105,46 @@ final class LauncherSession: ObservableObject {
     func moveDrag(to screenPoint: NSPoint) {
         dragDidMove(screenPoint)
         guard dragFolderID != nil, folderID == dragFolderID,
-              !folderPanelFrame.isEmpty,
-              !folderPanelFrame.insetBy(dx: -18, dy: -18).contains(screenPoint) else { return }
+              !folderPanelFrame.isEmpty else { return }
+        let direction = LauncherFolderDragEdge.direction(at: screenPoint, in: folderPanelFrame)
+        if dragPageDirection != direction { dragPageDirection = direction }
+        guard !folderPanelFrame.insetBy(dx: -18, dy: -18).contains(screenPoint) else { return }
         closeFolderForDrag()
+    }
+
+    func beginAppSelection(store: LauncherStore, including appID: String? = nil) {
+        guard folderID == nil, query.isEmpty, draggingID == nil, editingFolderID == nil else { return }
+        paging.cancel()
+        isSelectingApps = true
+        selectedAppIDs = []
+        selectedID = nil
+        if let appID { toggleAppSelection(appID, store: store) }
+    }
+
+    func toggleAppSelection(_ appID: String, store: LauncherStore) {
+        guard isSelectingApps, store.items.contains(where: { $0.id == appID && !$0.isFolder }) else { return }
+        if selectedAppIDs.contains(appID) { selectedAppIDs.remove(appID) }
+        else { selectedAppIDs.insert(appID) }
+    }
+
+    func cancelAppSelection() {
+        isSelectingApps = false
+        selectedAppIDs = []
+    }
+
+    func reconcileAppSelection(store: LauncherStore) {
+        selectedAppIDs.formIntersection(store.items.filter { !$0.isFolder }.map(\.id))
+    }
+
+    @discardableResult
+    func mergeSelectedApps(store: LauncherStore) -> String? {
+        guard isSelectingApps, let id = store.createFolder(appIDs: selectedAppIDs),
+              let index = store.items.firstIndex(where: { $0.id == id }) else { return nil }
+        cancelAppSelection()
+        page = index / pageSize
+        rememberPage()
+        selectedID = id
+        return id
     }
 
     func closeFolderForDrag() {
@@ -182,6 +222,10 @@ final class LauncherSession: ObservableObject {
     }
 
     func activate(_ item: LauncherItem, store: LauncherStore) {
+        if isSelectingApps {
+            toggleAppSelection(item.id, store: store)
+            return
+        }
         if item.isFolder {
             rememberPage()
             folderID = item.id
@@ -193,6 +237,7 @@ final class LauncherSession: ObservableObject {
     }
 
     func escape() {
+        if isSelectingApps { cancelAppSelection(); return }
         if editingFolderID != nil {
             editingFolderID = nil
             commitFolderRename = {}

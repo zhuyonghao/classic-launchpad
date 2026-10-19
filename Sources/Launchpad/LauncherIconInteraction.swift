@@ -27,6 +27,7 @@ struct LauncherIconInteraction: NSViewRepresentable {
     var onPressedChanged: (Bool) -> Void = { _ in }
     var dragImageSize = NSSize(width: 80, height: 80)
     var makeDragImage: (() -> NSImage?)? = nil
+    var allowsDragging = true
 
     func makeNSView(context: Context) -> LauncherIconInteractionView {
         let view = LauncherIconInteractionView(frame: .zero)
@@ -53,6 +54,7 @@ struct LauncherIconInteraction: NSViewRepresentable {
         view.onPressedChanged = onPressedChanged
         view.dragImageSize = dragImageSize
         view.makeDragImage = makeDragImage
+        view.allowsDragging = allowsDragging
         // Mouse-down state and active drag payload deliberately survive updates.
     }
 }
@@ -70,6 +72,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
 
     var dragImageSize = NSSize(width: 80, height: 80)
     var makeDragImage: (() -> NSImage?)?
+    var allowsDragging = true
     var itemID = ""
     var itemName = ""
     var dragImage = NSImage()
@@ -141,6 +144,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         // Even a failed or cancelled drag must not turn into an application launch.
         didDrag = true
         setPressed(false)
+        guard allowsDragging else { return }
         let payload = LauncherDragPayload(itemID: itemID, folderID: sourceFolderID)
         let exportedURL = Self.exportedApplicationURL(applicationURL)
         guard let pasteboardItem = Self.dragPasteboardItem(payload: payload, applicationURL: exportedURL) else {

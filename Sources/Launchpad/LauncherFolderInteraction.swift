@@ -1,6 +1,18 @@
 import AppKit
 import SwiftUI
 
+enum LauncherFolderDragEdge {
+    static let width: CGFloat = 36
+
+    static func direction(at point: NSPoint, in frame: NSRect) -> Int? {
+        guard !frame.isEmpty, frame.contains(point) else { return nil }
+        let edgeWidth = min(width, frame.width / 2)
+        if point.x < frame.minX + edgeWidth { return -1 }
+        if point.x >= frame.maxX - edgeWidth { return 1 }
+        return nil
+    }
+}
+
 /// Reports the visible panel in AppKit screen coordinates used by native drags.
 struct LauncherFolderFrameReader: NSViewRepresentable {
     let onFrame: (NSRect) -> Void
