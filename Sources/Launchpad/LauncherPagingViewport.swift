@@ -14,7 +14,7 @@ final class LauncherPagingViewport: NSView {
     private(set) var motion: LauncherPagingMotion?
     private(set) var precisePosition: CGFloat = 0
     private(set) var positionCommitCount = 0
-    private var pendingContent: AnyView?
+    private var pendingContent: (view: AnyView, pages: Set<Int>)?
     private var preparedPages: Set<Int> = []
     private(set) var frameLink: CADisplayLink?
     private var frameMetrics = LauncherPagingFrameMetrics()
@@ -43,25 +43,32 @@ final class LauncherPagingViewport: NSView {
                 animated: Bool, preparedPages: Set<Int> = []) {
         let size = NSSize(width: width * CGFloat(count), height: height)
         let geometryChanged = pageWidth != width || stripSize != size
-        let needsPreparation = !preparedPages.isSubset(of: self.preparedPages)
-        self.preparedPages = preparedPages
+        let contentPages = preparedPages.union([page])
+        let needsPreparation = !contentPages.isSubset(of: self.preparedPages)
+        let preparesTarget = !self.preparedPages.contains(page)
         pageWidth = width
         stripSize = size
         if geometryChanged {
             pendingContent = nil
             stop()
             hosting.rootView = content
+            self.preparedPages = contentPages
             hosting.setFrameSize(size)
             self.page = page
             setPosition(-CGFloat(page) * width)
         } else {
-            if (isMoving && !(isTracking && needsPreparation)) || (self.page != page && animated) {
+            if !preparesTarget && ((isMoving && !(isTracking && needsPreparation)) || (self.page != page && animated)) {
                 // In particular, do not rebuild two full icon grids when the
                 // selected page changes at finger-up. Apply once movement ends.
-                pendingContent = content
+                pendingContent = (content, contentPages)
             } else {
                 pendingContent = nil
                 hosting.rootView = content
+                self.preparedPages = contentPages
+                // Cold keyboard/dot navigation can beat adjacent prewarming.
+                // Materialize its destination before exposing it in an animation,
+                // including when another transition is already in progress.
+                if preparesTarget { hosting.layoutSubtreeIfNeeded() }
             }
             if self.page != page { settle(to: page, animated: animated) }
         }
@@ -174,7 +181,8 @@ final class LauncherPagingViewport: NSView {
     private func applyPendingContent() {
         guard let pendingContent else { return }
         self.pendingContent = nil
-        hosting.rootView = pendingContent
+        hosting.rootView = pendingContent.view
+        preparedPages = pendingContent.pages
     }
 
     func stop(applyPendingContent: Bool = true) {

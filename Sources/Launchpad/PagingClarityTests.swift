@@ -83,6 +83,71 @@ func runPagingClarityTests() async throws {
     }
     viewport.stop()
 
+    // Dot/keyboard navigation can beat the 80 ms neighbor warmup, or interrupt
+    // the previous animation before the next destination has ever been mounted.
+    let coldViewport = LauncherPagingViewport(reduceMotion: { false })
+    window.contentView = coldViewport
+    func coldStrip(ready: Set<Int>) -> AnyView {
+        let colors = [Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 1),
+                      Color(.sRGB, red: 0, green: 0, blue: 1, opacity: 1),
+                      Color(.sRGB, red: 0, green: 1, blue: 0, opacity: 1)]
+        return AnyView(HStack(spacing: 0) {
+            ForEach(0..<3, id: \.self) { page in
+                (ready.contains(page) ? colors[page] : Color.clear)
+                    .frame(width: 400, height: 100)
+            }
+        }.frame(width: 1200, height: 100))
+    }
+    func sampleColdTarget() throws -> NSColor {
+        coldViewport.layoutSubtreeIfNeeded()
+        guard let bitmap = coldViewport.bitmapImageRepForCachingDisplay(in: coldViewport.bounds) else {
+            throw Failure(description: "the cold navigation fixture can be rendered")
+        }
+        coldViewport.cacheDisplay(in: coldViewport.bounds, to: bitmap)
+        guard let color = bitmap.colorAt(x: bitmap.pixelsWide * 9 / 10, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB) else {
+            throw Failure(description: "cold navigation target pixels can be sampled")
+        }
+        return color
+    }
+    coldViewport.update(content: coldStrip(ready: [0]), page: 0, width: 400, height: 100,
+                        count: 3, animated: false, preparedPages: [0])
+    coldViewport.layoutSubtreeIfNeeded()
+    try await Task.sleep(for: .milliseconds(30))
+    coldViewport.update(content: coldStrip(ready: [0, 1]), page: 1, width: 400, height: 100,
+                        count: 3, animated: true, preparedPages: [0, 1])
+    coldViewport.frameLink?.isPaused = true
+    try await Task.sleep(for: .milliseconds(30))
+    guard let coldMotion = coldViewport.motion else {
+        throw Failure(description: "cold adjacent navigation still animates")
+    }
+    coldViewport.advanceAnimation(at: coldMotion.startedAt + 0.05)
+    let blue = try sampleColdTarget()
+    try check(blue.alphaComponent > 0.95 && blue.blueComponent > blue.redComponent + 0.2 &&
+              blue.blueComponent > blue.greenComponent + 0.2,
+              "a cold adjacent page has visible content during animation (sample: \(blue))")
+    coldViewport.update(content: coldStrip(ready: [0, 1, 2]), page: 2, width: 400, height: 100,
+                        count: 3, animated: true, preparedPages: [0, 1, 2])
+    try await Task.sleep(for: .milliseconds(30))
+    guard let interruptedMotion = coldViewport.motion else {
+        throw Failure(description: "rapid navigation retargets the active animation")
+    }
+    coldViewport.advanceAnimation(at: interruptedMotion.startedAt + 0.1)
+    let green = try sampleColdTarget()
+    try check(green.alphaComponent > 0.95 && green.greenComponent > green.redComponent + 0.2 &&
+              green.greenComponent > green.blueComponent + 0.2,
+              "rapid consecutive navigation mounts the new cold destination before revealing it (sample: \(green))")
+    coldViewport.stop()
+
+    let coldReducedViewport = LauncherPagingViewport(reduceMotion: { true })
+    window.contentView = coldReducedViewport
+    coldReducedViewport.update(content: coldStrip(ready: [0]), page: 0, width: 400, height: 100,
+                               count: 3, animated: false, preparedPages: [0])
+    coldReducedViewport.update(content: coldStrip(ready: [0, 1]), page: 1, width: 400, height: 100,
+                               count: 3, animated: true, preparedPages: [0, 1])
+    try check(coldReducedViewport.displayedPosition == -400 && !coldReducedViewport.isMoving,
+              "cold destination preparation also respects Reduce Motion")
+    window.contentView = viewport
+
     // Use two complete 7x5 grids, including image and label shadows. Merely
     // checking a colored rectangle misses the expensive finger-up content swap.
     window.setContentSize(NSSize(width: 400, height: 400))
@@ -140,7 +205,7 @@ func runPagingClarityTests() async throws {
               reducedMotionViewport.frameLink == nil,
               "Reduce Motion selects the final page immediately and releases the display link")
     window.orderOut(nil)
-    print("PASS: moving-frame edge sharpness, continuous input with pixel-aligned output, time-based settling, and two full 7x5 grids without mid-animation rebuilds")
+    print("PASS: cold and interrupted page navigation, moving-frame edge sharpness, time-based settling, and two full 7x5 grids without mid-animation rebuilds")
 }
 
 private final class PagingGridBodyCounter { var renders = 0 }

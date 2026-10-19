@@ -27,6 +27,7 @@ func runSmokeTests() async {
         try await runPagingTests()
         try await runPagingClarityTests()
         try runPagingContentCacheTests()
+        try await runCatalogRecoveryTests()
         try await runPresentationPerformanceTests()
 
         func launchEvent(_ eventID: AEEventID = kAEOpenApplication, reason: OSType? = nil,

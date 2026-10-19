@@ -84,8 +84,12 @@ final class LauncherStore: ObservableObject {
     private var searchIndex: [String: String] = [:]
     private var appsByID: [String: LauncherApp] = [:]
     private var lastRefreshUptime: TimeInterval?
+    private var lastScanIssue: String?
+    private let scanApplications: () -> AppCatalogScanner.Result
 
-    init(automaticallyRefresh: Bool = true) {
+    init(automaticallyRefresh: Bool = true,
+         scanApplications: @escaping () -> AppCatalogScanner.Result = { AppCatalogScanner.scan() }) {
+        self.scanApplications = scanApplications
         let environment = ProcessInfo.processInfo.environment
         let directory: URL
         if let override = environment["CLASSIC_LAUNCHPAD_DATA_DIR"], !override.isEmpty {
@@ -130,23 +134,29 @@ final class LauncherStore: ObservableObject {
         lastRefreshUptime = ProcessInfo.processInfo.systemUptime
         isScanning = true
         let catalogURL = catalogURL
+        let previousApps = apps
+        let scanApplications = scanApplications
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = AppCatalogScanner.scan()
+            let result = scanApplications()
             // Transliteration is relatively expensive. Prepare the search lookup
             // off the main thread without waiting for every page's icons to load.
-            let catalog = PreparedCatalog(apps: result.apps)
-            if !result.apps.isEmpty {
+            let catalog = PreparedCatalog(apps: result.preservingUnavailableApps(from: previousApps))
+            if !catalog.apps.isEmpty {
                 PersistedCatalog.save(catalog, to: catalogURL)
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                // A transient empty scan must retain both the visible catalog
-                // and the saved arrangement from the last successful discovery.
-                if !result.apps.isEmpty {
+                // Failed directories retain their previous metadata and layout;
+                // only successfully scanned locations can confirm removals.
+                if !catalog.apps.isEmpty {
                     self.applyCatalog(catalog)
                     self.saveLayout()
                 }
                 self.isScanning = false
+                if let previousIssue = self.lastScanIssue, self.errorMessage == previousIssue {
+                    self.errorMessage = nil
+                }
+                self.lastScanIssue = result.issue
                 if let issue = result.issue { self.errorMessage = issue }
             }
         }
@@ -421,8 +431,9 @@ private struct PersistedCatalog: Codable {
         var apps: [LauncherApp] = []
         var searchIndex: [String: String] = [:]
         for entry in saved.apps {
+            // A missing file may be inside an offline or unreadable directory.
+            // Discovery, rather than cache loading, must confirm its removal.
             guard entry.path.hasPrefix("/"),
-                  FileManager.default.fileExists(atPath: entry.path),
                   seenPaths.insert(entry.path).inserted,
                   seenBundles.insert(entry.bundleIdentifier).inserted else { continue }
             let app = LauncherApp(id: entry.path, name: entry.name,
@@ -451,6 +462,21 @@ enum AppCatalogScanner {
     struct Result {
         var apps: [LauncherApp]
         var issue: String?
+        var unavailablePaths: [URL] = []
+
+        func preservingUnavailableApps(from previousApps: [LauncherApp]) -> [LauncherApp] {
+            var paths = Set(apps.map(\.id))
+            var bundles = Set(apps.map(\.bundleIdentifier))
+            let unavailable = unavailablePaths.map { $0.standardizedFileURL.path }
+            return apps + previousApps.filter { app in
+                let path = app.url.standardizedFileURL.path
+                guard unavailable.contains(where: { path == $0 || path.hasPrefix($0 + "/") }),
+                      !paths.contains(app.id), !bundles.contains(app.bundleIdentifier) else { return false }
+                paths.insert(app.id)
+                bundles.insert(app.bundleIdentifier)
+                return true
+            }
+        }
     }
 
     static func scan(roots customRoots: [URL]? = nil) -> Result {
@@ -467,10 +493,17 @@ enum AppCatalogScanner {
         var seenPaths = Set<String>()
         var seenBundles = Set<String>()
         var readableRoots = 0
+        var unavailablePaths: [URL] = []
+        var hasReadError = false
 
         func addApplication(at url: URL) {
             let standardized = url.standardizedFileURL
-            guard !seenPaths.contains(standardized.path), let bundle = Bundle(url: standardized) else { return }
+            guard !seenPaths.contains(standardized.path) else { return }
+            guard let bundle = Bundle(url: standardized) else {
+                unavailablePaths.append(standardized)
+                hasReadError = true
+                return
+            }
             let info = bundle.infoDictionary ?? [:]
             // Installed standalone apps can set both LSBackgroundOnly and
             // LSUIElement (BetterDisplay). Package boundaries exclude embedded
@@ -495,20 +528,38 @@ enum AppCatalogScanner {
         }
 
         func walk(_ directory: URL, depth: Int) {
-            guard let children = try? fileManager.contentsOfDirectory(
-                at: directory,
-                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            ) else { return }
+            let children: [URL]
+            do {
+                children = try fileManager.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .contentModificationDateKey],
+                    options: [.skipsHiddenFiles])
+            } catch {
+                unavailablePaths.append(directory)
+                // Optional roots such as ~/Applications need not exist. Still
+                // retain their cached apps if a formerly available root vanishes.
+                let code = (error as NSError).code
+                if depth > 0 || (code != NSFileReadNoSuchFileError && code != NSFileNoSuchFileError) {
+                    hasReadError = true
+                }
+                return
+            }
             if depth == 0 { readableRoots += 1 }
             for child in children.sorted(by: { $0.path.localizedStandardCompare($1.path) == .orderedAscending }) {
                 if child.pathExtension.lowercased() == "app" {
                     addApplication(at: child)
                     continue
                 }
-                guard depth < 16,
-                      let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]),
-                      values.isDirectory == true, values.isSymbolicLink != true, values.isPackage != true else { continue }
+                guard depth < 16 else { continue }
+                let values: URLResourceValues
+                do {
+                    values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey])
+                } catch {
+                    unavailablePaths.append(child)
+                    hasReadError = true
+                    continue
+                }
+                guard values.isDirectory == true, values.isSymbolicLink != true, values.isPackage != true else { continue }
                 walk(child, depth: depth + 1)
             }
         }
@@ -532,7 +583,9 @@ enum AppCatalogScanner {
             if left != right { return left < right }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
-        return Result(apps: result, issue: readableRoots == 0 ? "无法读取应用程序文件夹。请检查文件夹权限后重试。" : nil)
+        let issue = readableRoots == 0 ? "无法读取应用程序文件夹。请检查文件夹权限后重试。"
+            : (hasReadError ? "部分应用目录无法读取，已保留原有应用和布局。请检查权限后刷新。" : nil)
+        return Result(apps: result, issue: issue, unavailablePaths: unavailablePaths)
     }
 
 

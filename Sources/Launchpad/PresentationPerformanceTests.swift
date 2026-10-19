@@ -181,9 +181,9 @@ func runPresentationPerformanceTests() async throws {
         try saveCatalog([entry(apps[0]), entry(missing), entry(apps[0])])
         let partiallyValid = LauncherStore()
         scanningStores.append(partiallyValid)
-        try check(partiallyValid.apps.map(\.id) == [apps[0].id] &&
-                  partiallyValid.items.flatMap(\.appIDs) == [apps[0].id],
-                  "cached catalog drops missing and duplicate applications before presentation")
+        try check(partiallyValid.apps.map(\.id) == [apps[0].id, missing.id] &&
+                  partiallyValid.items.flatMap(\.appIDs) == [apps[0].id, missing.id],
+                  "cached catalog deduplicates apps but leaves removal confirmation to discovery")
         try await waitForScan(partiallyValid)
 
         try Data("invalid catalog JSON".utf8).write(to: catalogURL, options: .atomic)
