@@ -25,6 +25,8 @@ struct LauncherIconInteraction: NSViewRepresentable {
     var activationSize: NSSize? = nil
     var onBlankClick: () -> Void = {}
     var onPressedChanged: (Bool) -> Void = { _ in }
+    var dragImageSize = NSSize(width: 80, height: 80)
+    var makeDragImage: (() -> NSImage?)? = nil
 
     func makeNSView(context: Context) -> LauncherIconInteractionView {
         let view = LauncherIconInteractionView(frame: .zero)
@@ -49,6 +51,8 @@ struct LauncherIconInteraction: NSViewRepresentable {
         view.activationSize = activationSize
         view.onBlankClick = onBlankClick
         view.onPressedChanged = onPressedChanged
+        view.dragImageSize = dragImageSize
+        view.makeDragImage = makeDragImage
         // Mouse-down state and active drag payload deliberately survive updates.
     }
 }
@@ -64,6 +68,8 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         return NSRect(x: (bounds.width - size.width) / 2, y: 0, width: size.width, height: size.height).contains(point)
     }
 
+    var dragImageSize = NSSize(width: 80, height: 80)
+    var makeDragImage: (() -> NSImage?)?
     var itemID = ""
     var itemName = ""
     var dragImage = NSImage()
@@ -146,11 +152,12 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         // in-flight drag from an application into a folder, or vice versa.
         activeApplicationURL = exportedURL
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        let point = convert(mouseDownEvent.locationInWindow, from: nil)
-        let side: CGFloat = 80
+        // Start at the rendered icon, preserving the grab point and its size.
+        // Folder previews are rendered once on lift, never during mouse moves.
         draggingItem.setDraggingFrame(
-            NSRect(x: point.x - side / 2, y: point.y - side / 2, width: side, height: side),
-            contents: dragImage
+            NSRect(x: (bounds.width - dragImageSize.width) / 2, y: 5,
+                   width: dragImageSize.width, height: dragImageSize.height),
+            contents: makeDragImage?() ?? dragImage
         )
         debug("begin native drag")
         let session = beginDraggingSession(with: [draggingItem], event: mouseDownEvent, source: self)

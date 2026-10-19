@@ -33,7 +33,7 @@ struct LauncherTileFeedback<Content: View, Interaction: View>: View {
     private var scale: CGFloat {
         if reduceMotion { return 1 }
         if isActivating { return isFolder ? 1.04 : 1.10 }
-        return isPressed ? 0.91 : 1
+        return isPressed ? (isFolder ? 0.96 : 0.91) : 1
     }
 
     private var opacity: Double {
@@ -75,6 +75,13 @@ struct LauncherTileFeedback<Content: View, Interaction: View>: View {
 
     private func activate() {
         guard isActive, !isActivating else { return }
+        if isFolder {
+            // The panel owns the opening animation; do not delay it with a
+            // second bounce on the tile before showing its contents.
+            isPressed = false
+            onActivate()
+            return
+        }
         withAnimation(reduceMotion ? nil : .easeOut(duration: Self.activationDuration)) {
             isPressed = false
             isActivating = true

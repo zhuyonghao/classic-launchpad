@@ -26,11 +26,20 @@ final class LauncherWindow: NSWindow {
 
 @MainActor
 final class LauncherSession: ObservableObject {
-    @Published var isPresented = false
-    @Published var query = ""
-    @Published var page = 0
+    let rootPaging = LauncherPaging()
+    let folderPaging = LauncherPaging()
+    var paging: LauncherPaging { folderID == nil ? rootPaging : folderPaging }
+    @Published var isPresented = false { didSet { if !isPresented { paging.cancel() } } }
+    @Published var query = "" { didSet { if query != oldValue { paging.cancel() } } }
+    @Published var page = 0 { didSet { if page != oldValue { paging.cancel() } } }
     private let preferences: UserDefaults
     private(set) var homePage: Int
+    private weak var derivedItemStore: LauncherStore?
+    private var derivedItemContext: LauncherPageContext?
+    private var derivedItemCatalogRevision: UInt64 = 0
+    private var derivedItemLayoutRevision: UInt64 = 0
+    private var derivedItems: [LauncherItem] = []
+    private(set) var derivedItemBuildCount = 0
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
@@ -54,9 +63,12 @@ final class LauncherSession: ObservableObject {
         selectedID = nil
         page = homePage
     }
-    @Published var folderID: String?
+    @Published var folderID: String? { didSet { if folderID != oldValue { rootPaging.cancel(); folderPaging.cancel() } } }
     @Published var selectedID: String?
     @Published var draggingID: String?
+    @Published private(set) var dragSourceFolder: LauncherItem?
+    private(set) var dragSourcePage = 0
+    var folderPanelFrame: NSRect = .zero
     @Published var dragFolderID: String?
     @Published var dropTarget: LauncherDropTarget?
     @Published var dragPageDirection: Int?
@@ -73,7 +85,10 @@ final class LauncherSession: ObservableObject {
     var commitFolderRename: () -> Void = {}
     var pageSize: Int { columns * rows }
 
-    func beginDrag(_ payload: LauncherDragPayload, exportsApplication: Bool) {
+    func beginDrag(_ payload: LauncherDragPayload, exportsApplication: Bool, sourceFolder: LauncherItem? = nil) {
+        paging.cancel()
+        dragSourceFolder = sourceFolder
+        dragSourcePage = page
         draggingID = payload.itemID
         dragFolderID = payload.folderID
         selectedID = nil
@@ -82,24 +97,68 @@ final class LauncherSession: ObservableObject {
         dragDidBegin(exportsApplication)
     }
 
+    /// Only the presentation changes on exit. Commit membership at the actual
+    /// drop, so cancellation and Dock exports leave the saved layout intact.
+    func moveDrag(to screenPoint: NSPoint) {
+        dragDidMove(screenPoint)
+        guard dragFolderID != nil, folderID == dragFolderID,
+              !folderPanelFrame.isEmpty,
+              !folderPanelFrame.insetBy(dx: -18, dy: -18).contains(screenPoint) else { return }
+        closeFolderForDrag()
+    }
+
+    func closeFolderForDrag() {
+        guard draggingID != nil, folderID != nil, folderID == dragFolderID else { return }
+        folderID = nil
+        page = homePage
+        selectedID = nil
+        dropTarget = nil
+        dragPageDirection = nil
+    }
+
     func endDrag() {
         let wasDragging = draggingID != nil
         draggingID = nil
         dragFolderID = nil
+        dragSourceFolder = nil
         dropTarget = nil
         dragPageDirection = nil
         if wasDragging { dragDidEnd() }
     }
 
     func allItems(_ store: LauncherStore) -> [LauncherItem] {
+        // Root pages already have a stored array. Only cache derived folder and
+        // search results, which otherwise get rebuilt for every scroll sample.
+        if folderID == nil && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            derivedItemStore = nil
+            derivedItemContext = nil
+            derivedItems = []
+            return store.items
+        }
+        let context = LauncherPageContext(folderID: folderID, query: query)
+        if derivedItemStore === store, derivedItemContext == context,
+           derivedItemCatalogRevision == store.catalogRevision,
+           derivedItemLayoutRevision == store.layoutRevision {
+            return derivedItems
+        }
+        let result: [LauncherItem]
         if let folderID, let folder = store.items.first(where: { $0.id == folderID }) {
-            return folder.appIDs.compactMap { id in
+            result = folder.appIDs.compactMap { id in
                 guard let app = store.app(for: id) else { return nil }
                 return LauncherItem(id: app.id, name: app.name, appIDs: [app.id], isFolder: false)
             }
+        } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            result = store.items
+        } else {
+            result = store.search(query).map { LauncherItem(id: $0.id, name: $0.name, appIDs: [$0.id], isFolder: false) }
         }
-        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return store.items }
-        return store.search(query).map { LauncherItem(id: $0.id, name: $0.name, appIDs: [$0.id], isFolder: false) }
+        derivedItemStore = store
+        derivedItemContext = context
+        derivedItemCatalogRevision = store.catalogRevision
+        derivedItemLayoutRevision = store.layoutRevision
+        derivedItems = result
+        derivedItemBuildCount += 1
+        return result
     }
 
     func presentationApps(_ store: LauncherStore) -> [LauncherApp] {
@@ -198,11 +257,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var scrollMonitor: Any?
     var mouseMonitor: Any?
     var hotKey: GlobalHotKey?
+    private let shortcutPreferences = LauncherShortcutPreferences()
+    private weak var shortcutRecorder: LauncherShortcutRecorder?
+    private var shortcutMenuItems: [NSMenuItem] = []
+    private var showMenuItem: NSMenuItem?
+    private var shortcutRegistrationError: String?
     private var gestureMonitor: TrackpadGestureMonitor?
     private var gestureMenuItems: [NSMenuItem] = []
     private var gestureStatusItems: [NSMenuItem] = []
-    private var scrollDistance: CGFloat = 0
-    private var lastPageTurn = Date.distantPast
     private var previousPresentation: NSApplication.PresentationOptions?
     private var wallpaperRequest = UUID()
     private var presentationRequest = UUID()
@@ -256,24 +318,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return event
         }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            guard let self, self.window.isKeyWindow, NSApp.modalWindow == nil,
-                  self.session.editingFolderID == nil, self.session.draggingID == nil,
-                  abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else { return event }
-            if event.phase == .began { self.scrollDistance = 0 }
-            if event.momentumPhase != [] { return nil }
-            self.scrollDistance += event.scrollingDeltaX
-            let threshold: CGFloat = event.hasPreciseScrollingDeltas ? 55 : 5
-            if abs(self.scrollDistance) > threshold && Date().timeIntervalSince(self.lastPageTurn) > 0.42 {
-                self.session.turnPage(self.scrollDistance < 0 ? 1 : -1, store: self.store)
-                self.scrollDistance = 0
-                self.lastPageTurn = Date()
+            guard let self else { return event }
+            guard self.window.isKeyWindow, NSApp.modalWindow == nil,
+                  self.session.isPresented, self.session.editingFolderID == nil,
+                  self.session.draggingID == nil else {
+                self.session.paging.cancel()
+                return event
             }
-            return nil
+            let count = max(1, (self.session.allItems(self.store).count + self.session.pageSize - 1) / self.session.pageSize)
+            let handled = self.session.paging.scroll(event: event, page: self.session.page, pageCount: count) { [weak self] target in
+                guard let self else { return }
+                self.session.page = target
+                self.session.selectedID = nil
+            }
+            return handled ? nil : event
         }
         if !isUITest {
-            hotKey = GlobalHotKey { [weak self] in self?.toggleLauncher() }
+            hotKey = GlobalHotKey(shortcut: shortcutPreferences.shortcut) { [weak self] in
+                guard let self else { return }
+                if let recorder = self.shortcutRecorder, recorder.isRecording, recorder.window?.isKeyWindow == true {
+                    recorder.record(self.shortcutPreferences.shortcut)
+                } else if NSApp.modalWindow == nil {
+                    self.toggleLauncher()
+                }
+            }
             if hotKey?.registered != true {
-                store.errorMessage = "⌥⌘L 已被其他应用占用。你仍可从程序坞或菜单栏打开启动台。"
+                let message = "\(shortcutPreferences.shortcut.displayName) 无法注册，可能已被占用。请从菜单栏选择“自定义打开快捷键…”更换组合。"
+                shortcutRegistrationError = message
+                store.errorMessage = message
             }
             configureTrackpadGestures()
         }
@@ -420,7 +492,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func toggleLauncher() {
+        guard NSApp.modalWindow == nil else { return }
         if window?.isVisible == true && NSApp.isActive { hideLauncher() } else { showLauncher() }
+    }
+
+    @objc private func customizeOpeningShortcut() {
+        NSApp.activate(ignoringOtherApps: true)
+        let editor = LauncherShortcutEditor(shortcut: shortcutPreferences.shortcut)
+        shortcutRecorder = editor.recorder
+        defer { shortcutRecorder = nil }
+        editor.run { [weak self] shortcut in
+            guard let self else { return false }
+            let saved = self.shortcutPreferences.save(shortcut) {
+                self.isUITest || self.hotKey?.replace(with: shortcut) == true
+            }
+            if saved {
+                if let error = self.shortcutRegistrationError, self.store.errorMessage == error {
+                    self.store.errorMessage = nil
+                }
+                self.shortcutRegistrationError = nil
+                self.updateShortcutMenus()
+            }
+            return saved
+        }
+    }
+
+    private func addShortcutMenu(to menu: NSMenu) {
+        let item = menu.addItem(withTitle: "", action: #selector(customizeOpeningShortcut), keyEquivalent: "")
+        item.target = self
+        shortcutMenuItems.append(item)
+    }
+
+    private func updateShortcutMenus() {
+        let shortcut = shortcutPreferences.shortcut
+        for item in shortcutMenuItems { item.title = "自定义打开快捷键…（\(shortcut.displayName)）" }
+        showMenuItem?.title = "显示启动台（\(shortcut.displayName)）"
+        statusItem?.button?.toolTip = "启动台 · 四指捏合 / \(shortcut.displayName)"
     }
 
     private func configureTrackpadGestures() {
@@ -499,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func showAbout() {
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "启动台", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.15",
-            .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n⌥⌘L 显示 / 隐藏\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
+            .credits: NSAttributedString(string: "经典 macOS 15 启动台体验\n\n四指捏合打开 · 四指张开收起\n\(shortcutPreferences.shortcut.displayName) 显示 / 隐藏（可在菜单中自定义）\n方向键选择 · 回车打开 · Esc 返回\n⌘← / ⌘→ 或双指横滑翻页\n拖叠图标创建文件夹，拖至图标两侧重新排列\n\n独立原生应用，与 Apple 无关联。"),
             NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "Swift · AppKit · SwiftUI"
         ])
         NSApp.activate(ignoringOtherApps: true)
@@ -512,6 +619,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "刷新应用", action: #selector(refreshApps), keyEquivalent: "r")
         appMenu.addItem(withTitle: "还原布局…", action: #selector(resetLayout), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        addShortcutMenu(to: appMenu)
         appMenu.addItem(.separator())
         addGestureMenu(to: appMenu)
         appMenu.addItem(.separator())
@@ -534,11 +643,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem?.button?.image = NSImage(systemSymbolName: "square.grid.3x3.fill", accessibilityDescription: "启动台")
-        statusItem?.button?.toolTip = "启动台 · 四指捏合 / ⌥⌘L"
         let menu = NSMenu()
-        let show = menu.addItem(withTitle: "显示启动台", action: #selector(showLauncher), keyEquivalent: "l")
-        show.keyEquivalentModifierMask = [.option, .command]
+        let show = menu.addItem(withTitle: "显示启动台", action: #selector(showLauncher), keyEquivalent: "")
         show.target = self
+        showMenuItem = show
+        addShortcutMenu(to: menu)
         menu.addItem(.separator())
         addGestureMenu(to: menu)
         menu.addItem(.separator())
@@ -548,6 +657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出启动台", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem?.menu = menu
+        updateShortcutMenus()
     }
 }
 
@@ -557,20 +667,56 @@ final class GlobalHotKey {
     private let action: () -> Void
     private(set) var registered = false
 
-    init(action: @escaping () -> Void) {
+    init(shortcut: LauncherShortcut = .default, action: @escaping () -> Void) {
         self.action = action
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
+        let handlerStatus = InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let context else { return OSStatus(eventNotHandledErr) }
+            var identifier = EventHotKeyID()
+            guard let event,
+                  GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                    nil, MemoryLayout<EventHotKeyID>.size, nil, &identifier) == noErr,
+                  identifier.signature == 0x4C504144, identifier.id == 1 else { return OSStatus(eventNotHandledErr) }
             let hotKey = Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue()
-            DispatchQueue.main.async { hotKey.action() }
+            DispatchQueue.main.async { [weak hotKey] in hotKey?.action() }
             return noErr
         }, 1, &eventType, context, &handler)
         guard handlerStatus == noErr else { return }
+        _ = replace(with: shortcut)
+    }
+
+    private var shortcut: LauncherShortcut?
+
+    /// Register the replacement before releasing the current key, so a conflict
+    /// leaves the working shortcut available and the saved preference untouched.
+    @discardableResult
+    func replace(with shortcut: LauncherShortcut) -> Bool {
+        guard handler != nil, shortcut.isValid else { return false }
+        if registered && self.shortcut == shortcut { return true }
+        guard !isSystemShortcut(shortcut) else { return false }
+        var replacement: EventHotKeyRef?
         let identifier = EventHotKeyID(signature: 0x4C504144, id: 1)
-        registered = RegisterEventHotKey(UInt32(kVK_ANSI_L), UInt32(cmdKey | optionKey), identifier,
-                                        GetApplicationEventTarget(), 0, &reference) == noErr
+        guard RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, identifier,
+                                  GetApplicationEventTarget(), OptionBits(kEventHotKeyExclusive), &replacement) == noErr else { return false }
+        if let reference { UnregisterEventHotKey(reference) }
+        reference = replacement
+        self.shortcut = shortcut
+        registered = true
+        return true
+    }
+
+    private func isSystemShortcut(_ shortcut: LauncherShortcut) -> Bool {
+        var entries: Unmanaged<CFArray>?
+        guard CopySymbolicHotKeys(&entries) == noErr,
+              let keys = entries?.takeRetainedValue() as? [[String: Any]] else { return false }
+        return keys.contains { key in
+            (key[kHISymbolicHotKeyEnabled as String] as? NSNumber)?.boolValue == true
+                && (key[kHISymbolicHotKeyCode as String] as? NSNumber)?.uint32Value == shortcut.keyCode
+                && (key[kHISymbolicHotKeyModifiers as String] as? NSNumber).map {
+                    $0.uint32Value & LauncherShortcut.modifierMask == shortcut.modifiers
+                } == true
+        }
     }
 
     deinit {

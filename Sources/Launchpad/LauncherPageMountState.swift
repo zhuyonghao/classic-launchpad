@@ -23,6 +23,19 @@ struct LauncherPageMountState {
         self = LauncherPageMountState()
     }
 
+    func needsNeighbors(of page: Int, count: Int, in context: LauncherPageContext) -> Bool {
+        self.context == context && [page - 1, page + 1].contains {
+            $0 >= 0 && $0 < count && !pages.contains($0)
+        }
+    }
+
+    mutating func prepareNeighbors(of page: Int, count: Int, in context: LauncherPageContext) {
+        guard self.context == context else { return }
+        for neighbor in [page - 1, page + 1] where neighbor >= 0 && neighbor < count {
+            pages.insert(neighbor)
+        }
+    }
+
     func contains(_ page: Int, currentPage: Int, in context: LauncherPageContext, isDragging: Bool) -> Bool {
         page == currentPage || ((self.context == context || isDragging) && pages.contains(page))
     }

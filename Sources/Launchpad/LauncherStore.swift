@@ -72,8 +72,10 @@ struct LauncherItem: Identifiable, Codable, Equatable {
 
 @MainActor
 final class LauncherStore: ObservableObject {
-    @Published var apps: [LauncherApp] = []
-    @Published var items: [LauncherItem] = []
+    @Published var apps: [LauncherApp] = [] { didSet { catalogRevision &+= 1 } }
+    @Published var items: [LauncherItem] = [] { didSet { layoutRevision &+= 1 } }
+    private(set) var catalogRevision: UInt64 = 0
+    private(set) var layoutRevision: UInt64 = 0
     @Published var isScanning = false
     @Published var errorMessage: String?
 
@@ -256,13 +258,16 @@ final class LauncherStore: ObservableObject {
     func moveAppOutOfFolder(appID: String, folderID: String) {
         guard let folderIndex = items.firstIndex(where: { $0.id == folderID && $0.isFolder }),
               items[folderIndex].appIDs.contains(appID), let app = app(for: appID) else { return }
-        items[folderIndex].appIDs.removeAll { $0 == appID }
+        var updated = items
+        updated[folderIndex].appIDs.removeAll { $0 == appID }
         let newItem = Self.item(for: app)
-        if items[folderIndex].appIDs.isEmpty {
-            items[folderIndex] = newItem
+        if let remainder = collapsedFolder(updated[folderIndex]) {
+            updated[folderIndex] = remainder
+            updated.insert(newItem, at: folderIndex + 1)
         } else {
-            items.insert(newItem, at: folderIndex + 1)
+            updated[folderIndex] = newItem
         }
+        items = updated
         saveLayout()
     }
 
@@ -277,7 +282,7 @@ final class LauncherStore: ObservableObject {
             } else {
                 updated.appIDs.removeAll { $0 == appID }
             }
-            return updated.appIDs.isEmpty ? nil : updated
+            return collapsedFolder(updated)
         }
         saveLayout()
     }
@@ -315,6 +320,7 @@ final class LauncherStore: ObservableObject {
             let appIDs = item.appIDs.filter { validIDs.contains($0) && seen.insert($0).inserted }
             guard !appIDs.isEmpty else { return nil }
             if item.isFolder {
+                if appIDs.count == 1, let app = app(for: appIDs[0]) { return Self.item(for: app) }
                 let folderID = validIDs.contains(item.id) || !folderIDs.insert(item.id).inserted
                     ? UUID().uuidString : item.id
                 let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -332,12 +338,22 @@ final class LauncherStore: ObservableObject {
         let utilities = apps.filter { $0.url.path.hasPrefix("/System/Applications/Utilities/") }
         let utilityIDs = Set(utilities.map(\.id))
         var result = apps.filter { !utilityIDs.contains($0.id) }.map(Self.item(for:))
-        if !utilities.isEmpty {
+        if utilities.count == 1 {
+            result.insert(Self.item(for: utilities[0]), at: min(result.count, 20))
+        } else if !utilities.isEmpty {
             let folder = LauncherItem(id: UUID().uuidString, name: "其他", appIDs: utilities.map(\.id), isFolder: true)
             let position = min(result.count, 20)
             result.insert(folder, at: position)
         }
         return result
+    }
+
+    private func collapsedFolder(_ item: LauncherItem) -> LauncherItem? {
+        guard !item.appIDs.isEmpty else { return nil }
+        if item.isFolder, item.appIDs.count == 1, let app = app(for: item.appIDs[0]) {
+            return Self.item(for: app)
+        }
+        return item
     }
 
     private static func item(for app: LauncherApp) -> LauncherItem {

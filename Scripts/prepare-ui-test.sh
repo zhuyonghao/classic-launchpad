@@ -28,6 +28,7 @@ plist["LSEnvironment"] = {
     "CLASSIC_LAUNCHPAD_UI_TEST": "1",
     "CLASSIC_LAUNCHPAD_DRAG_DEBUG": "1",
     "CLASSIC_LAUNCHPAD_DRAG_LOG": str(data / "drag.log"),
+    "CLASSIC_LAUNCHPAD_PAGING_LOG": str(data / "paging-frames.jsonl"),
 }
 with info.open("wb") as file:
     plistlib.dump(plist, file)

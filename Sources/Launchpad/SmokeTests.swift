@@ -18,9 +18,15 @@ func runSmokeTests() async {
         }
 
         try runFourFingerGestureTests()
+        try runShortcutTests()
         try runIconInteractionTests()
         try runDockDragTests()
         try runDragFeedbackTests()
+        try runFolderInteractionTests()
+        try await runFolderPresentationTests()
+        try await runPagingTests()
+        try await runPagingClarityTests()
+        try runPagingContentCacheTests()
         try await runPresentationPerformanceTests()
 
         func launchEvent(_ eventID: AEEventID = kAEOpenApplication, reason: OSType? = nil,
