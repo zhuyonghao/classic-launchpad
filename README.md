@@ -4,7 +4,7 @@
 
 ## 下载安装
 
-在 [Releases](https://github.com/zhuyonghao/classic-launchpad/releases/latest) 下载对应安装包：M 系列芯片选择 `arm64.zip`，Intel Mac 选择 `x86_64.zip`。解压后将“启动台.app”移到“应用程序”文件夹。需要 macOS 14 或更新版本。
+在 [Releases](https://github.com/zhuyonghao/classic-launchpad/releases/latest) 下载 Apple Silicon（M 系列芯片）安装包 `arm64.zip`。解压后将“启动台.app”移到“应用程序”文件夹。需要 macOS 14 或更新版本。
 
 ## 构建与运行
 
@@ -15,7 +15,7 @@
 open "build/启动台.app"
 ```
 
-生成的应用位于 `build/启动台.app`，可双击运行，也可自行将它移到“应用程序”文件夹。构建脚本只在项目内写入产物，不修改系统启动台或 Dock。应用使用本机临时签名；将它分发给其他 Mac 时，需要另行完成开发者签名及公证。Apple Silicon 与 Intel Mac 均可从源码编译，默认生成当前构建电脑架构的应用。
+生成的应用位于 `build/启动台.app`，可双击运行，也可自行将它移到“应用程序”文件夹。构建脚本只在项目内写入产物，不修改系统启动台或 Dock。应用使用本机临时签名；将它分发给其他 Mac 时，需要另行完成开发者签名及公证。发布的安装包仅面向 Apple Silicon（M 系列芯片）；本地构建默认生成当前构建电脑架构的应用。
 
 也可以用 `open Package.swift` 在 Xcode 中打开源码。
 
@@ -60,9 +60,9 @@ open "build/启动台.app"
 
 测试应用还会将翻页期间的显示刷新回调统计写入其独立数据目录下的 `paging-frames.jsonl`，记录请求刷新率、回调平均频率、平均/P95/最长间隔及迟到回调数。数据目录路径保存在 `build/ui-test-data-path.txt`。正式应用默认不采集逐帧统计或写日志；开发时也可设置 `CLASSIC_LAUNCHPAD_PAGING_LOG` 指定输出文件。这些数据测量回调节奏，不等同于最终画面的呈现帧率；分析 GPU/合成卡顿仍需 Instruments。
 
-GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试并生成应用 ZIP。推送到 `main`、`codex/` 分支或提交 Pull Request 后自动运行。
+GitHub Actions 会在 macOS 15 的 Apple Silicon 环境构建、测试并生成应用 ZIP。推送到 `main`、`codex/` 分支或提交 Pull Request 后自动运行。
 
-发布新版本时，先更新 `Resources/Info.plist` 中的版本号，合并到 `main`，再推送对应的 `vMAJOR.MINOR.PATCH` 标签，例如 `v1.1.14`。标签会触发两个架构的构建与测试；校验安装包版本和架构后，工作流上传两份安装包及 `SHA256SUMS.txt`，最后公开 Release。可在 `.github/release-notes/` 添加同名标签的 Markdown 更新说明；未提供时使用 GitHub 自动生成的说明。
+发布新版本时，先更新 `Resources/Info.plist` 中的版本号，合并到 `main`，再推送对应的 `vMAJOR.MINOR.PATCH` 标签，例如 `v1.1.16`。标签会触发 Apple Silicon 版本的构建与测试；校验安装包版本和架构后，工作流上传 `arm64.zip` 安装包及 `SHA256SUMS.txt`，最后公开 Release。可在 `.github/release-notes/` 添加同名标签的 Markdown 更新说明；未提供时使用 GitHub 自动生成的说明。
 
 ## 1.1.1 翻页性能
 
@@ -150,6 +150,7 @@ GitHub Actions 会在 macOS 15 的 Apple Silicon 和 Intel 环境构建、测试
 
 ## 1.1.16 跟手翻页与自定义快捷键
 
+- 安装包仅发布 Apple Silicon（M 系列芯片）版本。
 - 新增自定义打开快捷键，支持录入、保存、恢复默认及注册失败提示；保存后立即生效，重启后保留。
 - 触控板翻页实时跟随手指，松手后按距离与速度吸附；支持短滑回弹、首尾阻尼及动画中途重新接住。
 - 翻页位置按物理像素对齐，收尾动画按显示刷新时间采样；预热相邻页并复用文件夹和搜索结果，减少移动期间的视图重建。

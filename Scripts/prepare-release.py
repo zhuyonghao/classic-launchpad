@@ -21,7 +21,6 @@ BUNDLE_IDENTIFIER = "com.local.ClassicLaunchpad"
 MACHO_64_MAGIC = 0xFEEDFACF
 ARCHITECTURES = (
     ("ARM64", "arm64", 0x0100000C),
-    ("X64", "x86_64", 0x01000007),
 )
 
 
@@ -101,7 +100,7 @@ def prepare_release(tag, artifacts_dir, output_dir):
     if actual_names != expected_names:
         missing = sorted(expected_names - actual_names)
         unexpected = sorted(actual_names - expected_names)
-        raise ReleasePreparationError(f"expected exactly the two architecture ZIPs; missing={missing}, unexpected={unexpected}")
+        raise ReleasePreparationError(f"expected exactly the Apple Silicon ZIP; missing={missing}, unexpected={unexpected}")
 
     assets = []
     for architecture, asset_architecture, cpu in ARCHITECTURES:

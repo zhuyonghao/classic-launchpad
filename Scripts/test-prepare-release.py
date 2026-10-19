@@ -31,7 +31,6 @@ class PrepareReleaseTests(unittest.TestCase):
         self.artifacts.mkdir()
         self.output = self.root / "release"
         self.write_package("ARM64", 0x0100000C)
-        self.write_package("X64", 0x01000007)
 
     def write_package(self, architecture, cpu, version="1.1.14", bundle=release.BUNDLE_IDENTIFIER,
                       magic=release.MACHO_64_MAGIC, binary=None):
@@ -76,7 +75,7 @@ class PrepareReleaseTests(unittest.TestCase):
             os.utime(source, ns=(1_600_000_000_000_000_000, 1_600_000_000_123_456_789))
             originals[asset_architecture] = (source.read_bytes(), source.stat())
         assets = self.prepare()
-        expected_names = {"ClassicLaunchpad-v1.1.14-arm64.zip", "ClassicLaunchpad-v1.1.14-x86_64.zip", "SHA256SUMS.txt"}
+        expected_names = {"ClassicLaunchpad-v1.1.14-arm64.zip", "SHA256SUMS.txt"}
         self.assertEqual({asset.name for asset in assets}, expected_names)
         self.assertEqual({entry.name for entry in self.output.iterdir()}, expected_names)
         expected_checksums = []
@@ -123,24 +122,24 @@ class PrepareReleaseTests(unittest.TestCase):
         self.assert_rejected()
 
     def test_missing_architecture_fails_before_output(self):
-        (self.artifacts / "ClassicLaunchpad-X64.zip").unlink()
+        (self.artifacts / "ClassicLaunchpad-ARM64.zip").unlink()
         self.assert_rejected()
 
     def test_unexpected_input_fails_before_output(self):
         (self.artifacts / "extra.zip").write_bytes(b"unexpected")
         self.assert_rejected()
 
-    def test_version_mismatch_in_second_archive_fails_before_output(self):
-        self.write_package("X64", 0x01000007, version="1.1.13")
+    def test_version_mismatch_fails_before_output(self):
+        self.write_package("ARM64", 0x0100000C, version="1.1.13")
         self.assert_rejected()
 
-    def test_cpu_mismatch_in_either_archive_fails_before_output(self):
-        for architecture, wrong_cpu in (("ARM64", 0x01000007), ("X64", 0x0100000C)):
-            with self.subTest(architecture=architecture):
-                self.write_package("ARM64", 0x0100000C)
-                self.write_package("X64", 0x01000007)
-                self.write_package(architecture, wrong_cpu)
-                self.assert_rejected()
+    def test_intel_binary_in_arm64_archive_fails_before_output(self):
+        self.write_package("ARM64", 0x01000007)
+        self.assert_rejected()
+
+    def test_intel_archive_is_rejected(self):
+        self.write_package("X64", 0x01000007)
+        self.assert_rejected()
 
     def test_invalid_tag_fails_before_output(self):
         for tag in ("1.1.14", "v1.1", "v1.1.14-rc1", "v1.1.14/extra"):
@@ -148,7 +147,7 @@ class PrepareReleaseTests(unittest.TestCase):
                 self.assert_rejected(tag)
 
     def test_bundle_mismatch_fails_before_output(self):
-        self.write_package("X64", 0x01000007, bundle="com.example.OtherApp")
+        self.write_package("ARM64", 0x0100000C, bundle="com.example.OtherApp")
         self.assert_rejected()
 
     def test_invalid_macho_magic_fails_before_output(self):

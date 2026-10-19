@@ -10,7 +10,6 @@ ASSET_DIRECTORY="build/release"
 RELEASE_STATE="build/release-state.json"
 ASSETS=(
     "$ASSET_DIRECTORY/ClassicLaunchpad-$RELEASE_TAG-arm64.zip"
-    "$ASSET_DIRECTORY/ClassicLaunchpad-$RELEASE_TAG-x86_64.zip"
     "$ASSET_DIRECTORY/SHA256SUMS.txt"
 )
 for asset in "${ASSETS[@]}"; do
@@ -67,7 +66,7 @@ for filename in sys.argv[3:]:
         expected = "sha256:" + hashlib.sha256(local.read_bytes()).hexdigest()
         if digest and digest != expected:
             raise SystemExit(f"Release asset checksum does not match: {local.name}")
-print("Verified both architecture archives and the checksum file.")
+print("Verified the Apple Silicon archive and the checksum file.")
 PY
 
 if [[ "$ALREADY_PUBLISHED" == true ]]; then

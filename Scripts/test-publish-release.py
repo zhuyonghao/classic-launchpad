@@ -20,7 +20,6 @@ COMMIT = "0123456789abcdef0123456789abcdef01234567"
 RELEASE_ID = 411776261
 ASSET_NAMES = (
     f"ClassicLaunchpad-{TAG}-arm64.zip",
-    f"ClassicLaunchpad-{TAG}-x86_64.zip",
     "SHA256SUMS.txt",
 )
 
@@ -32,13 +31,12 @@ class PublishReleaseTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.assets = self.root / "build" / "release"
         self.assets.mkdir(parents=True)
-        for name, content in zip(ASSET_NAMES[:2], (b"arm64 archive payload", b"x86_64 archive payload")):
-            (self.assets / name).write_bytes(content)
+        (self.assets / ASSET_NAMES[0]).write_bytes(b"arm64 archive payload")
         checksums = "".join(
             f"{hashlib.sha256((self.assets / name).read_bytes()).hexdigest()}  {name}\n"
-            for name in ASSET_NAMES[:2]
+            for name in ASSET_NAMES[:-1]
         )
-        (self.assets / ASSET_NAMES[2]).write_text(checksums, encoding="utf-8")
+        (self.assets / ASSET_NAMES[-1]).write_text(checksums, encoding="utf-8")
         self.config_path = self.root / "gh-config.json"
         self.log_path = self.root / "gh-calls.jsonl"
         executable_directory = self.root / "bin"
