@@ -28,6 +28,7 @@ struct LauncherIconInteraction: NSViewRepresentable {
     var dragImageSize = NSSize(width: 80, height: 80)
     var makeDragImage: (() -> NSImage?)? = nil
     var allowsDragging = true
+    var isInteractionEnabled = true
 
     func makeNSView(context: Context) -> LauncherIconInteractionView {
         let view = LauncherIconInteractionView(frame: .zero)
@@ -55,6 +56,7 @@ struct LauncherIconInteraction: NSViewRepresentable {
         view.dragImageSize = dragImageSize
         view.makeDragImage = makeDragImage
         view.allowsDragging = allowsDragging
+        view.isInteractionEnabled = isInteractionEnabled
         // Mouse-down state and active drag payload deliberately survive updates.
     }
 }
@@ -73,6 +75,19 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     var dragImageSize = NSSize(width: 80, height: 80)
     var makeDragImage: (() -> NSImage?)?
     var allowsDragging = true
+    var isInteractionEnabled = true {
+        didSet {
+            guard isInteractionEnabled != oldValue else { return }
+            if isInteractionEnabled { registerForDraggedTypes([Self.pasteboardType]) }
+            else {
+                unregisterDraggedTypes()
+                // SwiftUI clears presentation feedback with the page context;
+                // do not publish callbacks from an NSViewRepresentable update.
+                isDropTarget = false
+                isPressed = false
+            }
+        }
+    }
     var itemID = ""
     var itemName = ""
     var dragImage = NSImage()
@@ -113,6 +128,10 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isInteractionEnabled ? super.hitTest(point) : nil
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
@@ -291,12 +310,16 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     }
 
     private func acceptedPayload(from sender: NSDraggingInfo) -> LauncherDragPayload? {
-        guard sender.draggingSource is LauncherIconInteractionView,
-              sender.draggingSourceOperationMask.contains(.move),
-              let data = sender.draggingPasteboard.data(forType: Self.pasteboardType),
-              let payload = try? JSONDecoder().decode(LauncherDragPayload.self, from: data),
+        guard isInteractionEnabled, let payload = Self.internalPayload(from: sender),
               payload.itemID != itemID, canDrop(payload) else { return nil }
         return payload
+    }
+
+    static func internalPayload(from sender: NSDraggingInfo) -> LauncherDragPayload? {
+        guard sender.draggingSource is LauncherIconInteractionView,
+              sender.draggingSourceOperationMask.contains(.move),
+              let data = sender.draggingPasteboard.data(forType: pasteboardType) else { return nil }
+        return try? JSONDecoder().decode(LauncherDragPayload.self, from: data)
     }
 
     private func setDropTarget(_ targeted: Bool) {
@@ -305,7 +328,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         onTargetChanged(targeted)
     }
 
-    private func setDropFeedback(_ fraction: CGFloat?) {
+    func setDropFeedback(_ fraction: CGFloat?) {
         setDropTarget(fraction != nil)
         onDropLocationChanged(fraction)
     }
@@ -316,7 +339,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
         onPressedChanged(pressed)
     }
 
-    private func debug(_ message: String) {
+    func debug(_ message: String) {
         guard Self.debugEnabled else { return }
         if let data = "[Launchpad drag] \(itemName): \(message)\n".data(using: .utf8) {
             FileHandle.standardError.write(data)

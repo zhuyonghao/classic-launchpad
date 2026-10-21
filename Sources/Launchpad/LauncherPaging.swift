@@ -180,12 +180,14 @@ struct LauncherPagingSurface<Content: View>: View {
     let width: CGFloat
     let height: CGFloat
     let animatesPageChange: Bool
+    var isInteractionEnabled = true
     @ViewBuilder var content: Content
 
     var body: some View {
         LauncherNativePagingBridge(paging: paging, page: page, pageCount: pageCount, preparedPages: preparedPages,
                                    width: width, height: height,
-                                   animatesPageChange: animatesPageChange, content: content)
+                                   animatesPageChange: animatesPageChange,
+                                   isInteractionEnabled: isInteractionEnabled, content: content)
             .frame(width: width, height: height)
             .onAppear { paging.resize(to: width) }
             .onChange(of: width) { _, width in paging.resize(to: width) }
@@ -200,6 +202,7 @@ private struct LauncherNativePagingBridge<Content: View>: NSViewRepresentable {
     let width: CGFloat
     let height: CGFloat
     let animatesPageChange: Bool
+    let isInteractionEnabled: Bool
     let content: Content
 
     func makeNSView(context: Context) -> LauncherPagingViewport {
@@ -209,12 +212,13 @@ private struct LauncherNativePagingBridge<Content: View>: NSViewRepresentable {
     }
 
     func updateNSView(_ viewport: LauncherPagingViewport, context: Context) {
+        viewport.isInteractionEnabled = isInteractionEnabled
         viewport.update(content: AnyView(content.frame(width: width * CGFloat(pageCount), height: height,
                                                       alignment: .topLeading)
             .environment(\.colorScheme, context.environment.colorScheme)
             .environment(\.layoutDirection, context.environment.layoutDirection)),
                         page: page, width: width, height: height, count: pageCount,
-                        animated: animatesPageChange, preparedPages: preparedPages)
+                        animated: animatesPageChange && isInteractionEnabled, preparedPages: preparedPages)
     }
 
     static func dismantleNSView(_ viewport: LauncherPagingViewport, coordinator: ()) {

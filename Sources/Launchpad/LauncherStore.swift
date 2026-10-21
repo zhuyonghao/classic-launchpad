@@ -311,20 +311,25 @@ final class LauncherStore: ObservableObject {
         saveLayout()
     }
 
-    func moveApp(_ appID: String, toFolder folderID: String) {
+    @discardableResult
+    func moveApp(_ appID: String, toFolder folderID: String, at index: Int? = nil) -> Bool {
         guard app(for: appID) != nil,
-              let target = items.first(where: { $0.id == folderID && $0.isFolder }),
-              !target.appIDs.contains(appID) else { return }
+              let target = items.first(where: { $0.id == folderID && $0.isFolder }) else { return false }
+        if target.appIDs.contains(appID) {
+            guard let index else { return true }
+            return moveFolderMember(appID, to: index, folderID: folderID)
+        }
         items = items.compactMap { item in
             var updated = item
             if item.id == folderID {
-                updated.appIDs.append(appID)
+                updated.appIDs.insert(appID, at: min(max(0, index ?? updated.appIDs.count), updated.appIDs.count))
             } else {
                 updated.appIDs.removeAll { $0 == appID }
             }
             return collapsedFolder(updated)
         }
         saveLayout()
+        return true
     }
 
     func resetLayout() {

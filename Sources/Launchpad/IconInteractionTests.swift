@@ -57,5 +57,11 @@ func runIconInteractionTests() throws {
     view.mouseUp(with: event(.leftMouseUp, NSPoint(x: 49, y: 50)))
     try check(presses == [true, false] && activations == 2 && blankClicks == 2,
               "leaving icon content cancels press feedback and returns from the gap")
+    view.isInteractionEnabled = false
+    try check(view.registeredDraggedTypes.isEmpty && view.hitTest(.zero) == nil,
+              "retained inactive icons neither intercept hits nor register native drop regions")
+    view.isInteractionEnabled = true
+    try check(view.registeredDraggedTypes.contains(LauncherIconInteractionView.pasteboardType),
+              "revealing an icon restores its native drop registration")
     print("PASS: native click feedback, gap hit areas, outside release, pointer tolerance, and single activation")
 }

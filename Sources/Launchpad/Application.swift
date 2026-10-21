@@ -72,6 +72,8 @@ final class LauncherSession: ObservableObject {
     @Published private(set) var dragSourceFolder: LauncherItem?
     private(set) var dragSourcePage = 0
     var folderPanelFrame: NSRect = .zero
+    private var awaitsFolderDragEntry = false
+    private var dragOpenedFolderID: String?
     @Published var dragFolderID: String?
     @Published var dropTarget: LauncherDropTarget?
     @Published var dragPageDirection: Int?
@@ -92,6 +94,8 @@ final class LauncherSession: ObservableObject {
         paging.cancel()
         dragSourceFolder = sourceFolder
         dragSourcePage = page
+        awaitsFolderDragEntry = false
+        dragOpenedFolderID = nil
         draggingID = payload.itemID
         dragFolderID = payload.folderID
         selectedID = nil
@@ -104,12 +108,51 @@ final class LauncherSession: ObservableObject {
     /// drop, so cancellation and Dock exports leave the saved layout intact.
     func moveDrag(to screenPoint: NSPoint) {
         dragDidMove(screenPoint)
-        guard dragFolderID != nil, folderID == dragFolderID,
+        guard draggingID != nil, folderID != nil,
               !folderPanelFrame.isEmpty else { return }
+        // A spring-open panel can appear away from the hovered root icon. Let
+        // the pointer reach it before treating an outside move as a drag-out.
+        if awaitsFolderDragEntry {
+            guard folderPanelFrame.contains(screenPoint) else { return }
+            awaitsFolderDragEntry = false
+        }
         let direction = LauncherFolderDragEdge.direction(at: screenPoint, in: folderPanelFrame)
         if dragPageDirection != direction { dragPageDirection = direction }
         guard !folderPanelFrame.insetBy(dx: -18, dy: -18).contains(screenPoint) else { return }
         closeFolderForDrag()
+    }
+
+    func folderHoverTarget(store: LauncherStore) -> String? {
+        guard isPresented, !isSelectingApps, editingFolderID == nil,
+              folderID == nil, query.isEmpty, let draggingID,
+              case let .item(id, .merge) = dropTarget,
+              store.items.contains(where: { $0.id == id && $0.isFolder }),
+              LauncherDropActions.canPlaceApp(LauncherDragPayload(itemID: draggingID, folderID: dragFolderID), store: store)
+        else { return nil }
+        return id
+    }
+
+    func openFolderAfterHover(_ id: String, store: LauncherStore) async {
+        let sourceID = draggingID
+        let sourceFolderID = dragFolderID
+        do { try await Task.sleep(for: .milliseconds(550)) } catch { return }
+        guard !Task.isCancelled, draggingID == sourceID, dragFolderID == sourceFolderID,
+              folderHoverTarget(store: store) == id else { return }
+        rememberPage()
+        folderPanelFrame = .zero
+        awaitsFolderDragEntry = true
+        dragOpenedFolderID = id
+        folderID = id
+        page = 0
+        selectedID = nil
+        dropTarget = nil
+        dragPageDirection = nil
+    }
+
+    func acceptsFolderDrop(_ payload: LauncherDragPayload) -> Bool {
+        guard let folderID else { return false }
+        return payload.folderID == folderID ||
+            (dragOpenedFolderID == folderID && draggingID == payload.itemID && dragFolderID == payload.folderID)
     }
 
     func beginAppSelection(store: LauncherStore, including appID: String? = nil) {
@@ -148,7 +191,9 @@ final class LauncherSession: ObservableObject {
     }
 
     func closeFolderForDrag() {
-        guard draggingID != nil, folderID != nil, folderID == dragFolderID else { return }
+        guard draggingID != nil, folderID != nil else { return }
+        awaitsFolderDragEntry = false
+        dragOpenedFolderID = nil
         folderID = nil
         page = homePage
         selectedID = nil
@@ -161,6 +206,8 @@ final class LauncherSession: ObservableObject {
         draggingID = nil
         dragFolderID = nil
         dragSourceFolder = nil
+        awaitsFolderDragEntry = false
+        dragOpenedFolderID = nil
         dropTarget = nil
         dragPageDirection = nil
         if wasDragging { dragDidEnd() }

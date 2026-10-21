@@ -163,5 +163,88 @@ func runFolderPresentationTests() async throws {
     source.onDragEnded()
     try check(session.draggingID == nil && session.dragSourceFolder == nil,
               "the retained source can deliver native completion after the folder disappears")
-    print("PASS: real SwiftUI/AppKit panel geometry, native source identity across drag-out and collapse, and root drop targeting")
+
+    let largeFolder = LauncherItem(id: "multi-page-folder", name: "Multi-page", appIDs: store.apps.prefix(40).map(\.id), isFolder: true)
+    store.items = [largeFolder] + store.apps.dropFirst(40).map {
+        LauncherItem(id: $0.id, name: $0.name, appIDs: [$0.id], isFolder: false)
+    }
+    session.activate(largeFolder, store: store)
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    session.page = 1
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    session.folderPaging.viewport?.completeTracking(at: 1)
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    guard let secondPageSource = surfaces(in: host).first(where: {
+        $0.itemID == "presentation-39" && $0.sourceFolderID == largeFolder.id
+    }) else { throw Failure(description: "the second folder page mounts its drag source") }
+    let secondPagePayload = LauncherDragPayload(itemID: secondPageSource.itemID, folderID: largeFolder.id)
+    secondPageSource.onDragStarted(secondPagePayload)
+    func dragReceiver(in view: NSView) -> LauncherDragDestinationView? {
+        (view as? LauncherDragDestinationView) ?? view.subviews.lazy.compactMap { dragReceiver(in: $0) }.first
+    }
+    guard let receiver = dragReceiver(in: host) else { throw Failure(description: "the launcher mounts its persistent native destination") }
+    let drag = try LauncherTestDraggingInfo(source: secondPageSource, payload: secondPagePayload, window: window)
+    let panel = session.folderPanelFrame
+    try check(!panel.isEmpty && panel.width <= window.frame.width && panel.height < window.frame.height,
+              "multiple folder pages report only the visible panel's screen geometry")
+    drag.draggingLocation = window.convertPoint(fromScreen: NSPoint(x: panel.midX, y: panel.maxY + 40))
+    try check(receiver.draggingEntered(drag) == .move, "the native destination accepts a member while crossing the panel boundary")
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    try check(session.folderID == nil && session.draggingID == secondPagePayload.itemID &&
+              session.dragSourcePage == 1 && surfaces(in: host).contains(where: { $0 === secondPageSource }),
+              "dragging directly from the second page closes the panel and retains its native source")
+    guard let rootDestination = surfaces(in: host).first(where: { $0.itemID == "presentation-42" && $0.sourceFolderID == nil }) else {
+        throw Failure(description: "multi-page extraction reveals root destinations")
+    }
+    let targetPoint = rootDestination.convert(NSPoint(x: rootDestination.bounds.midX, y: rootDestination.bounds.midY), to: host.superview)
+    try check(host.hitTest(targetPoint) === receiver && dragReceiver(in: host) === receiver,
+              "one native destination remains above root targets throughout folder closing")
+    try check(secondPageSource.registeredDraggedTypes.isEmpty &&
+              rootDestination.registeredDraggedTypes.contains(LauncherIconInteractionView.pasteboardType),
+              "closing a multi-page folder unregisters its retained native drop regions and restores root regions")
+    drag.draggingLocation = rootDestination.convert(NSPoint(x: rootDestination.bounds.width * 0.1, y: rootDestination.bounds.midY), to: nil)
+    try check(receiver.draggingUpdated(drag) == .move && session.dropTarget == .item(rootDestination.itemID, .before),
+              "native updates route to the revealed root icon and display its insertion line")
+    try check(receiver.prepareForDragOperation(drag) && receiver.performDragOperation(drag),
+              "the full native destination sequence commits a second-page member at the chosen root position")
+    secondPageSource.onDragEnded()
+
+    session.activate(store.items.first(where: { $0.id == largeFolder.id })!, store: store)
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    guard let crossPageSource = surfaces(in: host).first(where: {
+        $0.itemID == "presentation-0" && $0.sourceFolderID == largeFolder.id
+    }) else { throw Failure(description: "the first page remounts its native source") }
+    let crossPagePayload = LauncherDragPayload(itemID: crossPageSource.itemID, folderID: largeFolder.id)
+    crossPageSource.onDragStarted(crossPagePayload)
+    let crossPageDrag = try LauncherTestDraggingInfo(source: crossPageSource, payload: crossPagePayload, window: window)
+    session.turnPage(1, store: store)
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    // Leave while the second page is still moving; hiding the source panel
+    // must not leave its deferred AppKit destinations above the root grid.
+    crossPageDrag.draggingLocation = window.convertPoint(fromScreen: NSPoint(x: session.folderPanelFrame.maxX + 40, y: session.folderPanelFrame.midY))
+    _ = receiver.draggingEntered(crossPageDrag)
+    try await Task.sleep(for: .milliseconds(100))
+    host.layoutSubtreeIfNeeded()
+    try check(session.folderID == nil && surfaces(in: host).contains(where: { $0 === crossPageSource }) &&
+              crossPageSource.registeredDraggedTypes.isEmpty && session.folderPaging.viewport?.isMoving == false,
+              "closing during a folder page turn stops hidden movement and keeps only the native source lifecycle")
+    guard let afterTurnTarget = surfaces(in: host).first(where: { $0.itemID == "presentation-43" && $0.sourceFolderID == nil }) else {
+        throw Failure(description: "root sorting destinations survive folder page-turn exit")
+    }
+    let afterTurnPoint = afterTurnTarget.convert(NSPoint(x: afterTurnTarget.bounds.midX, y: afterTurnTarget.bounds.midY), to: host.superview)
+    crossPageDrag.draggingLocation = afterTurnTarget.convert(NSPoint(x: afterTurnTarget.bounds.width * 0.9, y: afterTurnTarget.bounds.midY), to: nil)
+    try check(host.hitTest(afterTurnPoint) === receiver && receiver.draggingUpdated(crossPageDrag) == .move &&
+              session.dropTarget == .item(afterTurnTarget.itemID, .after) && receiver.performDragOperation(crossPageDrag),
+              "native updates and drop still sort after a root app following a folder page turn")
+    crossPageSource.onDragEnded()
+    let ids = store.items.flatMap(\.appIDs)
+    try check(ids.count == 45 && Set(ids).count == 45 && LauncherStore(automaticallyRefresh: false).items == store.items,
+              "both multi-page drag-out paths persist their chosen root order without duplicating apps")
+    print("PASS: real panel geometry, native source retention, second-page and mid-page-turn drag-out, root hit routing/drop regions, sorting, and persistence")
 }

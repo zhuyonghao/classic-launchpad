@@ -19,6 +19,14 @@ struct LauncherView: View {
         Array(allItems.dropFirst(currentPage * session.pageSize).prefix(session.pageSize))
     }
     private var openedFolder: LauncherItem? { store.items.first { $0.id == session.folderID && $0.isFolder } }
+    private var mountedFolders: [LauncherItem] {
+        var folders = session.dragSourceFolder.map { [$0] } ?? []
+        if let openedFolder {
+            if let index = folders.firstIndex(where: { $0.id == openedFolder.id }) { folders[index] = openedFolder }
+            else { folders.append(openedFolder) }
+        }
+        return folders
+    }
     private var folderAnimation: Animation? {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.9)
     }
@@ -28,7 +36,7 @@ struct LauncherView: View {
             return "两侧插入排序 · 中央合并文件夹 · 停留在边缘翻页"
         }
         if !session.query.isEmpty { return "拖到程序坞添加应用" }
-        return "两侧插入排序 · 中央合并文件夹 · 拖到程序坞添加应用"
+        return "两侧插入排序 · 停留在文件夹中央展开 · 拖到程序坞添加应用"
     }
     private var pageAnimation: Animation? {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .easeInOut(duration: 0.2)
@@ -46,6 +54,11 @@ struct LauncherView: View {
         let adjacentApps = adjacentIconApps
         return launcherWithContentUpdates
             .task(id: dragPageTaskID) { await turnPagesWhileDragging() }
+            .task(id: session.folderHoverTarget(store: store)) {
+                if let id = session.folderHoverTarget(store: store) {
+                    await session.openFolderAfterHover(id, store: store)
+                }
+            }
             .task(id: adjacentApps) { await prewarmAdjacentIcons(adjacentApps) }
             .task { await hideUsageHintAfterDelay() }
             .onAppear { recordMountedPage() }
@@ -148,6 +161,7 @@ struct LauncherView: View {
                             gridWidth: gridWidth, cellWidth: cellWidth, rowHeight: rowHeight)
             if let message = store.errorMessage { errorBanner(message) }
         }
+        .overlay { LauncherDragDestination(store: store, session: session) }
         .contextMenu {
             if session.folderID == nil && session.query.isEmpty && session.draggingID == nil && !session.isSelectingApps {
                 Button {
@@ -192,7 +206,7 @@ struct LauncherView: View {
             }
             // Retain the native source until AppKit ends the drag, even after
             // revealing the root grid and even if the drop dissolves the folder.
-            if let folder = openedFolder ?? session.dragSourceFolder {
+            ForEach(mountedFolders) { folder in
                 folderPanel(folder, iconSize: iconSize, gridWidth: gridWidth, rowHeight: rowHeight)
                     .opacity(session.folderID == folder.id ? 1 : 0)
                     .scaleEffect(session.folderID == folder.id ? 1 : 0.92)
@@ -371,7 +385,8 @@ struct LauncherView: View {
         let context = LauncherPageContext(folderID: folderID, query: session.query)
         let active = context == pageContext
         return LauncherPagingSurface(paging: folderID == nil ? session.rootPaging : session.folderPaging, page: current, pageCount: count, preparedPages: mountedPages.pages, width: width, height: height,
-                                     animatesPageChange: mountedPages.animatesTransition(to: current, in: context)) {
+                                     animatesPageChange: mountedPages.animatesTransition(to: current, in: context),
+                                     isInteractionEnabled: active) {
             HStack(alignment: .top, spacing: 0) {
                 ForEach(0..<count, id: \.self) { page in
                     Group {
@@ -405,15 +420,18 @@ struct LauncherView: View {
                                     LauncherEmptySlotFeedback(isTargeted: session.dropTarget == .slot(slotIndex), iconSize: iconSize)
                                 }
                                 .overlay {
-                                    LauncherIconInteraction(id: "", name: "空位", image: NSImage(), sourceFolderID: nil,
+                                    LauncherIconInteraction(id: "", name: "空位", image: NSImage(), sourceFolderID: folderID,
                                         onActivate: {}, onDragStarted: { _ in }, onDragEnded: {},
-                                        canDrop: { _ in isActive && !session.isSelectingApps && (session.query.isEmpty || folderID != nil) },
+                                        canDrop: { payload in
+                                            isActive && !session.isSelectingApps && (session.query.isEmpty || folderID != nil)
+                                                && (folderID == nil || session.acceptsFolderDrop(payload))
+                                        },
                                         onDrop: { payload, _ in
                                             LauncherDropActions.onSlot(payload, index: slotIndex, store: store, session: session)
                                         }, onTargetChanged: { targeted in
                                             if targeted { session.dropTarget = .slot(slotIndex) }
                                             else if session.dropTarget == .slot(slotIndex) { session.dropTarget = nil }
-                                        }, onBlankClick: { returnFromBlank() })
+                                        }, onBlankClick: { returnFromBlank() }, isInteractionEnabled: isActive)
                                 }
                         }
                     }
@@ -482,6 +500,7 @@ struct LauncherView: View {
                 },
                 canDrop: { payload in
                     isActive && !session.isSelectingApps && payload.itemID != item.id && (session.query.isEmpty || folderID != nil)
+                        && (folderID == nil || session.acceptsFolderDrop(payload))
                 },
                 onDrop: { payload, fraction in
                     LauncherDropActions.onIcon(payload, target: item, horizontalFraction: fraction, store: store, session: session)
@@ -506,7 +525,8 @@ struct LauncherView: View {
                     renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
                     return renderer.nsImage
                 } : nil,
-                allowsDragging: !session.isSelectingApps
+                allowsDragging: !session.isSelectingApps,
+                isInteractionEnabled: isActive
             )
         }
         .id(item.id)
@@ -626,7 +646,9 @@ struct LauncherView: View {
         .overlay(alignment: .leading) { folderPageEdge(-1, folderID: folder.id) }
         .overlay(alignment: .trailing) { folderPageEdge(1, folderID: folder.id) }
         .background {
-            LauncherFolderFrameReader { session.folderPanelFrame = $0 }
+            LauncherFolderFrameReader {
+                if session.folderID == folder.id { session.folderPanelFrame = $0 }
+            }
         }
         .frame(height: availableHeight, alignment: .center)
     }
@@ -715,11 +737,19 @@ struct LauncherView: View {
 
 @MainActor
 enum LauncherDropActions {
+    static func canPlaceApp(_ payload: LauncherDragPayload, store: LauncherStore) -> Bool {
+        guard store.app(for: payload.itemID) != nil else { return false }
+        if let sourceFolder = payload.folderID {
+            return store.items.contains { $0.id == sourceFolder && $0.isFolder && $0.appIDs.contains(payload.itemID) }
+        }
+        return store.items.contains { $0.id == payload.itemID && !$0.isFolder }
+    }
+
     static func onPageBackground(_ payload: LauncherDragPayload, folderID: String?, store: LauncherStore, session: LauncherSession) -> Bool {
         guard !session.isSelectingApps else { return false }
         let insertionIndex: Int
         if let folderID {
-            guard session.folderID == folderID, payload.folderID == folderID else { return false }
+            guard session.folderID == folderID else { return false }
             insertionIndex = (session.page + 1) * session.pageSize - 1
         } else {
             session.closeFolderForDrag()
@@ -734,9 +764,10 @@ enum LauncherDropActions {
     }
 
     static func onSlot(_ payload: LauncherDragPayload, index: Int, store: LauncherStore, session: LauncherSession) -> Bool {
+        guard !session.isSelectingApps else { return false }
         if let folderID = session.folderID {
-            guard payload.folderID == folderID else { return false }
-            return store.moveFolderMember(payload.itemID, to: index, folderID: folderID)
+            guard session.acceptsFolderDrop(payload), canPlaceApp(payload, store: store) else { return false }
+            return store.moveApp(payload.itemID, toFolder: folderID, at: index)
         }
         guard session.query.isEmpty else { return false }
         if let folderID = payload.folderID {
@@ -757,20 +788,22 @@ enum LauncherDropActions {
                        horizontalFraction: CGFloat, store: LauncherStore,
                        session: LauncherSession) -> Bool {
         let source = payload.itemID
-        guard source != target.id, session.query.isEmpty || session.folderID != nil else { return false }
+        guard !session.isSelectingApps, source != target.id, session.query.isEmpty || session.folderID != nil else { return false }
         var targetID = target.id
         if let openFolder = session.folderID {
-            guard store.items.contains(where: { $0.id == openFolder && $0.isFolder && $0.appIDs.contains(target.id) }),
-                  payload.folderID == openFolder else { return false }
+            guard let folder = store.items.first(where: { $0.id == openFolder && $0.isFolder }),
+                  let targetIndex = folder.appIDs.firstIndex(of: target.id),
+                  session.acceptsFolderDrop(payload), canPlaceApp(payload, store: store) else { return false }
+            if payload.folderID == openFolder {
+                store.reorderAppInFolder(sourceID: source, before: target.id, folderID: openFolder, after: horizontalFraction > 0.5)
+                return true
+            }
+            return store.moveApp(source, toFolder: openFolder, at: targetIndex + (horizontalFraction > 0.5 ? 1 : 0))
         } else {
             guard store.items.contains(where: { $0.id == target.id }) else { return false }
         }
         if let sourceFolder = payload.folderID {
             guard store.items.contains(where: { $0.id == sourceFolder && $0.isFolder && $0.appIDs.contains(source) }) else { return false }
-            if sourceFolder == session.folderID {
-                store.reorderAppInFolder(sourceID: source, before: target.id, folderID: sourceFolder, after: horizontalFraction > 0.5)
-                return true
-            }
             if sourceFolder == target.id {
                 // Dropping back into the original folder is a no-op. For a
                 // side drop, keep targeting its surviving application if it
@@ -784,9 +817,7 @@ enum LauncherDropActions {
         } else {
             guard store.items.contains(where: { $0.id == source }) else { return false }
         }
-        if let folderID = session.folderID {
-            store.moveApp(source, toFolder: folderID)
-        } else if LauncherDropPlacement.resolve(horizontalFraction: horizontalFraction, inFolder: false) == .before {
+        if LauncherDropPlacement.resolve(horizontalFraction: horizontalFraction, inFolder: false) == .before {
             store.moveItem(source, before: targetID)
         } else if LauncherDropPlacement.resolve(horizontalFraction: horizontalFraction, inFolder: false) == .after {
             store.moveItem(source, after: targetID)

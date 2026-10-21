@@ -7,6 +7,13 @@ import SwiftUI
 final class LauncherPagingViewport: NSView {
     private let hosting = NSHostingView(rootView: AnyView(EmptyView()))
     private let reduceMotion: () -> Bool
+    var isInteractionEnabled = true {
+        didSet {
+            // Hidden pages receive no reliable display ticks. Finish their
+            // pending content now so stale drop regions cannot survive a close.
+            if !isInteractionEnabled && oldValue { stop() }
+        }
+    }
     private(set) var page = 0
     private var pageWidth: CGFloat = 0
     private var stripSize = NSSize.zero
@@ -219,6 +226,9 @@ final class LauncherPagingViewport: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        // Retained folder sources must keep delivering drag callbacks after
+        // closing, but their separate hosting tree must not cover root targets.
+        guard isInteractionEnabled else { return nil }
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
         // AppKit's hit regions are at the model position during a layer animation.
