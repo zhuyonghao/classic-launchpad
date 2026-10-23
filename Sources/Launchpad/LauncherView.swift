@@ -499,7 +499,7 @@ struct LauncherView: View {
                     session.selectedID = nil
                 },
                 canDrop: { payload in
-                    isActive && !session.isSelectingApps && payload.itemID != item.id && (session.query.isEmpty || folderID != nil)
+                    isActive && !session.isSelectingApps && (session.query.isEmpty || folderID != nil)
                         && (folderID == nil || session.acceptsFolderDrop(payload))
                 },
                 onDrop: { payload, fraction in
@@ -788,12 +788,13 @@ enum LauncherDropActions {
                        horizontalFraction: CGFloat, store: LauncherStore,
                        session: LauncherSession) -> Bool {
         let source = payload.itemID
-        guard !session.isSelectingApps, source != target.id, session.query.isEmpty || session.folderID != nil else { return false }
+        guard !session.isSelectingApps, session.query.isEmpty || session.folderID != nil else { return false }
         var targetID = target.id
         if let openFolder = session.folderID {
             guard let folder = store.items.first(where: { $0.id == openFolder && $0.isFolder }),
                   let targetIndex = folder.appIDs.firstIndex(of: target.id),
                   session.acceptsFolderDrop(payload), canPlaceApp(payload, store: store) else { return false }
+            if source == target.id { return true }
             if payload.folderID == openFolder {
                 store.reorderAppInFolder(sourceID: source, before: target.id, folderID: openFolder, after: horizontalFraction > 0.5)
                 return true
@@ -801,6 +802,9 @@ enum LauncherDropActions {
             return store.moveApp(source, toFolder: openFolder, at: targetIndex + (horizontalFraction > 0.5 ? 1 : 0))
         } else {
             guard store.items.contains(where: { $0.id == target.id }) else { return false }
+            // A small drag released in its original cell is a successful no-op,
+            // not a page-background drop that sends the item to the end.
+            if source == target.id { return payload.folderID == nil }
         }
         if let sourceFolder = payload.folderID {
             guard store.items.contains(where: { $0.id == sourceFolder && $0.isFolder && $0.appIDs.contains(source) }) else { return false }

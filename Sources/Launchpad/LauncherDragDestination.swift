@@ -106,7 +106,12 @@ final class LauncherDragDestinationView: NSView {
             target = next
             (sender.draggingSource as? LauncherIconInteractionView)?.debug("persistent target: \(next?.itemName ?? "page background")")
         }
-        if let target { target.setDropFeedback(fraction(at: sender.draggingLocation, in: target)) }
+        if let target {
+            // Keep the source cell as a real destination, but never preview
+            // inserting beside or merging an item with itself.
+            target.setDropFeedback(target.itemID == payload.itemID ? nil : fraction(at: sender.draggingLocation, in: target))
+        }
+        if target?.itemID == payload.itemID { session.dropTarget = nil }
         // A folder itself can only be sorted/merged on the root grid.
         if session.folderID != nil && !LauncherDropActions.canPlaceApp(payload, store: store) { return [] }
         return .move
@@ -122,7 +127,7 @@ final class LauncherDragDestinationView: NSView {
 
     private func findTarget(in view: NSView, point: NSPoint, payload: LauncherDragPayload) -> LauncherIconInteractionView? {
         if let icon = view as? LauncherIconInteractionView,
-           icon.isInteractionEnabled, icon.itemID != payload.itemID, icon.canDrop(payload),
+           icon.isInteractionEnabled, icon.canDrop(payload),
            icon.bounds.contains(icon.convert(point, from: nil)) { return icon }
         for child in view.subviews.reversed() {
             if let icon = findTarget(in: child, point: point, payload: payload) { return icon }

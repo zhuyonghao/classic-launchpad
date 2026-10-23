@@ -22,6 +22,7 @@ func runSmokeTests() async {
         try runIconInteractionTests()
         try runDockDragTests()
         try runDragFeedbackTests()
+        try await runNativeSourceDropTests()
         try runFolderInteractionTests()
         try await runFolderPresentationTests()
         try await runFolderHoverTests()

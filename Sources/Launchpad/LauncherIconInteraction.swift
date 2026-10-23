@@ -236,15 +236,17 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let accepted = acceptedPayload(from: sender) != nil
+        let payload = acceptedPayload(from: sender)
+        let accepted = payload != nil
         debug("destination entered (accepted \(accepted))")
-        setDropFeedback(accepted ? horizontalFraction(for: sender) : nil)
+        setDropFeedback(accepted && payload?.itemID != itemID ? horizontalFraction(for: sender) : nil)
         return accepted ? .move : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let accepted = acceptedPayload(from: sender) != nil
-        setDropFeedback(accepted ? horizontalFraction(for: sender) : nil)
+        let payload = acceptedPayload(from: sender)
+        let accepted = payload != nil
+        setDropFeedback(accepted && payload?.itemID != itemID ? horizontalFraction(for: sender) : nil)
         return accepted ? .move : []
     }
 
@@ -311,7 +313,7 @@ final class LauncherIconInteractionView: NSView, NSDraggingSource {
 
     private func acceptedPayload(from sender: NSDraggingInfo) -> LauncherDragPayload? {
         guard isInteractionEnabled, let payload = Self.internalPayload(from: sender),
-              payload.itemID != itemID, canDrop(payload) else { return nil }
+              canDrop(payload) else { return nil }
         return payload
     }
 
