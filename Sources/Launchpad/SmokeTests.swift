@@ -121,7 +121,7 @@ func runSmokeTests() async {
         try check(aliasScan.apps.count == 1 && aliasScan.failures.isEmpty, "finder aliases are scanned without bundle failures")
         try check(aliasScan.apps.first?.bundleIdentifier == "test.alias.target", "finder aliases use the target bundle identifier")
         try check(aliasScan.apps.first?.name == "别名浏览器", "finder aliases keep their own visible name")
-        try check(aliasScan.apps.first?.url == aliasTarget, "finder aliases use the resolved bundle URL")
+        try check(aliasScan.apps.first?.url.resolvingSymlinksInPath().path == aliasTarget.resolvingSymlinksInPath().path, "finder aliases use the resolved bundle URL")
 
 
         let defaults = store.items
