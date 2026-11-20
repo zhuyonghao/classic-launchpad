@@ -556,8 +556,25 @@ enum AppCatalogScanner {
         var hasReadError = false
 
         func addApplication(at url: URL) {
-            let standardized = url.standardizedFileURL
-            guard !seenPaths.contains(standardized.path) else { return }
+            let original = url.standardizedFileURL
+            guard !seenPaths.contains(original.path) else { return }
+            // Finder aliases use the .app extension without being bundles.
+            // Resolve them so aliases such as 豆包浏览器.app stay launchable,
+            // while keeping the alias's own name as the visible label.
+            let isAliasFile = (try? original.resourceValues(forKeys: [.isAliasFileKey]))?.isAliasFile == true
+            let standardized: URL
+            if isAliasFile {
+                guard let resolved = try? URL(resolvingAliasFileAt: original, options: []) else {
+                    unavailablePaths.append(original)
+                    failures.append(Failure(path: original, stage: .bundle, error: nil))
+                    hasReadError = true
+                    return
+                }
+                standardized = resolved.standardizedFileURL
+                guard !seenPaths.contains(standardized.path) else { return }
+            } else {
+                standardized = original
+            }
             guard let bundle = Bundle(url: standardized) else {
                 unavailablePaths.append(standardized)
                 failures.append(Failure(path: standardized, stage: .bundle, error: nil))
@@ -575,7 +592,9 @@ enum AppCatalogScanner {
             let localized = bundle.localizedInfoDictionary ?? [:]
             let candidates = [localized["CFBundleDisplayName"], localized["CFBundleName"], info["CFBundleDisplayName"]]
             let preferred = candidates.compactMap { $0 as? String }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            var name = preferred ?? fileManager.displayName(atPath: standardized.path)
+            var name = isAliasFile
+                ? fileManager.displayName(atPath: original.path)
+                : (preferred ?? fileManager.displayName(atPath: standardized.path))
             if name.lowercased().hasSuffix(".app") { name = String(name.dropLast(4)) }
             seenPaths.insert(standardized.path)
             seenBundles.insert(identifier)

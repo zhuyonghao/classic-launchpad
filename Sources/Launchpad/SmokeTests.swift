@@ -107,6 +107,22 @@ func runSmokeTests() async {
         try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "test.embedded.helper", "CFBundlePackageType": "APPL"], format: .xml, options: 0).write(to: helperApp.appendingPathComponent("Info.plist"))
         try check(AppCatalogScanner.scan(roots: [nestedRoot]).apps.count == 1, "embedded helper apps remain excluded")
 
+        let aliasTargetRoot = directory.appendingPathComponent("alias-targets")
+        let aliasRoot = directory.appendingPathComponent("alias-apps")
+        let aliasTarget = aliasTargetRoot.appendingPathComponent("Target.app")
+        try FileManager.default.createDirectory(at: aliasTarget.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        let aliasInfo: [String: Any] = ["CFBundleIdentifier": "test.alias.target", "CFBundleName": "Target", "CFBundlePackageType": "APPL"]
+        try PropertyListSerialization.data(fromPropertyList: aliasInfo, format: .xml, options: 0).write(to: aliasTarget.appendingPathComponent("Contents/Info.plist"))
+        try FileManager.default.createDirectory(at: aliasRoot, withIntermediateDirectories: true)
+        let aliasURL = aliasRoot.appendingPathComponent("别名浏览器.app")
+        let aliasBookmark = try aliasTarget.bookmarkData(options: [.suitableForBookmarkFile], includingResourceValuesForKeys: nil, relativeTo: nil)
+        try NSURL.writeBookmarkData(aliasBookmark, to: aliasURL, options: 0)
+        let aliasScan = AppCatalogScanner.scan(roots: [aliasRoot])
+        try check(aliasScan.apps.count == 1 && aliasScan.failures.isEmpty, "finder aliases are scanned without bundle failures")
+        try check(aliasScan.apps.first?.bundleIdentifier == "test.alias.target", "finder aliases use the target bundle identifier")
+        try check(aliasScan.apps.first?.name == "别名浏览器", "finder aliases keep their own visible name")
+        try check(aliasScan.apps.first?.url == aliasTarget, "finder aliases use the resolved bundle URL")
+
 
         let defaults = store.items
         let sessionPreferences = UserDefaults(suiteName: "ClassicLaunchpad.Smoke.\(UUID().uuidString)")!
