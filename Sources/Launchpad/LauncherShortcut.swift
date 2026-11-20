@@ -67,9 +67,13 @@ final class LauncherShortcutPreferences {
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
-        if let data = preferences.data(forKey: Self.storageKey),
-           let saved = try? JSONDecoder().decode(LauncherShortcut.self, from: data), saved.isValid {
-            shortcut = saved
+        if let data = preferences.data(forKey: Self.storageKey) {
+            if let saved = try? JSONDecoder().decode(LauncherShortcut.self, from: data), saved.isValid {
+                shortcut = saved
+            } else {
+                AppErrorLog.error("saved opening shortcut is invalid", category: "shortcut")
+                shortcut = .default
+            }
         } else {
             shortcut = .default
         }
@@ -77,7 +81,18 @@ final class LauncherShortcutPreferences {
 
     @discardableResult
     func save(_ candidate: LauncherShortcut, register: () -> Bool) -> Bool {
-        guard candidate.isValid, let data = try? JSONEncoder().encode(candidate), register() else { return false }
+        guard candidate.isValid else {
+            AppErrorLog.error("rejected invalid opening shortcut: \(candidate.displayName)", category: "shortcut")
+            return false
+        }
+        guard let data = try? JSONEncoder().encode(candidate) else {
+            AppErrorLog.error("failed to encode opening shortcut: \(candidate.displayName)", category: "shortcut")
+            return false
+        }
+        guard register() else {
+            AppErrorLog.error("opening shortcut registration was rejected: \(candidate.displayName)", category: "shortcut")
+            return false
+        }
         preferences.set(data, forKey: Self.storageKey)
         shortcut = candidate
         return true

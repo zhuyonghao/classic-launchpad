@@ -64,6 +64,17 @@ func runCatalogRecoveryTests() async throws {
         let partial = scan()
         try check(partial.issue != nil && partial.unavailablePaths.contains(unavailable),
                   "a partial scan reports its failed root even while other roots succeed")
+        try check(partial.failures.count == 1 &&
+                  partial.failures.first?.path.standardizedFileURL == unavailable.standardizedFileURL &&
+                  partial.failures.first?.stage == .directory &&
+                  partial.failures.first?.error?.domain == NSCocoaErrorDomain,
+                  "a partial scan records the failing path, stage, and error")
+        ScanDiagnostics.logFirstFailure(partial.failures)
+        let logText = try String(contentsOf: AppPaths.errorLogURL, encoding: .utf8)
+        try check(logText.contains("category=catalog") &&
+                  logText.contains("stage=directory") &&
+                  logText.contains(unavailable.path),
+                  "scan diagnostics log the first failure")
         store.refresh()
         try await wait(store)
         try check(store.items.first(where: \.isFolder) == originalFolder &&

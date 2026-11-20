@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import os
 
 struct LauncherApp: Identifiable, Hashable {
     let id: String
@@ -90,15 +91,7 @@ final class LauncherStore: ObservableObject {
     init(automaticallyRefresh: Bool = true,
          scanApplications: @escaping () -> AppCatalogScanner.Result = { AppCatalogScanner.scan() }) {
         self.scanApplications = scanApplications
-        let environment = ProcessInfo.processInfo.environment
-        let directory: URL
-        if let override = environment["CLASSIC_LAUNCHPAD_DATA_DIR"], !override.isEmpty {
-            directory = URL(fileURLWithPath: override, isDirectory: true)
-        } else {
-            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-            directory = support.appendingPathComponent("com.local.ClassicLaunchpad", isDirectory: true)
-        }
+        let directory = AppPaths.dataDirectory
         layoutURL = directory.appendingPathComponent("layout.json")
         catalogURL = directory.appendingPathComponent("catalog.json")
         if FileManager.default.fileExists(atPath: layoutURL.path) {
@@ -108,9 +101,11 @@ final class LauncherStore: ObservableObject {
                     items = saved.items
                 } else {
                     errorMessage = "此布局来自较新的启动台版本，将使用默认布局。"
+                    AppErrorLog.error("unsupported layout version \(saved.version)", category: "layout")
                 }
             } catch {
                 errorMessage = "无法读取已保存的布局，将使用默认布局。"
+                AppErrorLog.error("failed to load saved layout", category: "layout", error: error)
             }
         }
         if automaticallyRefresh {
@@ -138,6 +133,7 @@ final class LauncherStore: ObservableObject {
         let scanApplications = scanApplications
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = scanApplications()
+            ScanDiagnostics.logFirstFailure(result.failures)
             // Transliteration is relatively expensive. Prepare the search lookup
             // off the main thread without waiting for every page's icons to load.
             let catalog = PreparedCatalog(apps: result.preservingUnavailableApps(from: previousApps))
@@ -340,6 +336,7 @@ final class LauncherStore: ObservableObject {
     func launch(_ app: LauncherApp) {
         guard FileManager.default.fileExists(atPath: app.url.path) else {
             errorMessage = "找不到“\(app.name)”。请刷新应用列表后重试。"
+            AppErrorLog.error("application not found: \(app.name) (\(app.url.path))", category: "launch")
             return
         }
         let configuration = NSWorkspace.OpenConfiguration()
@@ -348,6 +345,7 @@ final class LauncherStore: ObservableObject {
             DispatchQueue.main.async {
                 if let error {
                     self?.errorMessage = "无法打开“\(app.name)”：\(error.localizedDescription)"
+                    AppErrorLog.error("failed to open application: \(app.name) (\(app.url.path))", category: "launch", error: error)
                 } else {
                     NSApplication.shared.hide(nil)
                 }
@@ -419,6 +417,7 @@ final class LauncherStore: ObservableObject {
             try data.write(to: layoutURL, options: .atomic)
         } catch {
             errorMessage = "无法保存启动台布局：\(error.localizedDescription)"
+            AppErrorLog.error("failed to save layout", category: "layout", error: error)
         }
     }
 }
@@ -458,26 +457,35 @@ private struct PersistedCatalog: Codable {
     }
 
     static func load(from url: URL) -> PreparedCatalog? {
-        guard let data = try? Data(contentsOf: url),
-              let saved = try? JSONDecoder().decode(Self.self, from: data),
-              saved.version == currentVersion else { return nil }
-        var seenPaths = Set<String>()
-        var seenBundles = Set<String>()
-        var apps: [LauncherApp] = []
-        var searchIndex: [String: String] = [:]
-        for entry in saved.apps {
-            // A missing file may be inside an offline or unreadable directory.
-            // Discovery, rather than cache loading, must confirm its removal.
-            guard entry.path.hasPrefix("/"),
-                  seenPaths.insert(entry.path).inserted,
-                  seenBundles.insert(entry.bundleIdentifier).inserted else { continue }
-            let app = LauncherApp(id: entry.path, name: entry.name,
-                                  url: URL(fileURLWithPath: entry.path), bundleIdentifier: entry.bundleIdentifier,
-                                  iconRevision: entry.iconRevision ?? 0)
-            apps.append(app)
-            searchIndex[app.id] = entry.searchIndex
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            let saved = try JSONDecoder().decode(Self.self, from: data)
+            guard saved.version == currentVersion else {
+                AppErrorLog.error("unsupported catalog cache version \(saved.version)", category: "catalog-cache")
+                return nil
+            }
+            var seenPaths = Set<String>()
+            var seenBundles = Set<String>()
+            var apps: [LauncherApp] = []
+            var searchIndex: [String: String] = [:]
+            for entry in saved.apps {
+                // A missing file may be inside an offline or unreadable directory.
+                // Discovery, rather than cache loading, must confirm its removal.
+                guard entry.path.hasPrefix("/"),
+                      seenPaths.insert(entry.path).inserted,
+                      seenBundles.insert(entry.bundleIdentifier).inserted else { continue }
+                let app = LauncherApp(id: entry.path, name: entry.name,
+                                      url: URL(fileURLWithPath: entry.path), bundleIdentifier: entry.bundleIdentifier,
+                                      iconRevision: entry.iconRevision ?? 0)
+                apps.append(app)
+                searchIndex[app.id] = entry.searchIndex
+            }
+            return apps.isEmpty ? nil : PreparedCatalog(apps: apps, searchIndex: searchIndex)
+        } catch {
+            AppErrorLog.error("failed to load catalog cache", category: "catalog-cache", error: error)
+            return nil
         }
-        return apps.isEmpty ? nil : PreparedCatalog(apps: apps, searchIndex: searchIndex)
     }
 
     static func save(_ catalog: PreparedCatalog, to url: URL) {
@@ -489,15 +497,30 @@ private struct PersistedCatalog: Codable {
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(saved).write(to: url, options: .atomic)
-        } catch { }
+        } catch {
+            AppErrorLog.error("failed to save catalog cache", category: "catalog-cache", error: error)
+        }
     }
 }
 
 enum AppCatalogScanner {
+    struct Failure {
+        enum Stage: String {
+            case bundle
+            case directory
+            case attributes
+        }
+
+        let path: URL
+        let stage: Stage
+        let error: NSError?
+    }
+
     struct Result {
         var apps: [LauncherApp]
         var issue: String?
         var unavailablePaths: [URL] = []
+        var failures: [Failure] = []
 
         func preservingUnavailableApps(from previousApps: [LauncherApp]) -> [LauncherApp] {
             var paths = Set(apps.map(\.id))
@@ -529,6 +552,7 @@ enum AppCatalogScanner {
         var seenBundles = Set<String>()
         var readableRoots = 0
         var unavailablePaths: [URL] = []
+        var failures: [Failure] = []
         var hasReadError = false
 
         func addApplication(at url: URL) {
@@ -536,6 +560,7 @@ enum AppCatalogScanner {
             guard !seenPaths.contains(standardized.path) else { return }
             guard let bundle = Bundle(url: standardized) else {
                 unavailablePaths.append(standardized)
+                failures.append(Failure(path: standardized, stage: .bundle, error: nil))
                 hasReadError = true
                 return
             }
@@ -576,6 +601,7 @@ enum AppCatalogScanner {
                 let code = (error as NSError).code
                 if depth > 0 || (code != NSFileReadNoSuchFileError && code != NSFileNoSuchFileError) {
                     hasReadError = true
+                    failures.append(Failure(path: directory, stage: .directory, error: error as NSError))
                 }
                 return
             }
@@ -591,6 +617,7 @@ enum AppCatalogScanner {
                     values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey])
                 } catch {
                     unavailablePaths.append(child)
+                    failures.append(Failure(path: child, stage: .attributes, error: error as NSError))
                     hasReadError = true
                     continue
                 }
@@ -620,10 +647,19 @@ enum AppCatalogScanner {
         }
         let issue = readableRoots == 0 ? "无法读取应用程序文件夹。请检查文件夹权限后重试。"
             : (hasReadError ? "部分应用目录无法读取，已保留原有应用和布局。请检查权限后刷新。" : nil)
-        return Result(apps: result, issue: issue, unavailablePaths: unavailablePaths)
+        return Result(apps: result, issue: issue, unavailablePaths: unavailablePaths, failures: failures)
     }
 
 
+}
+
+enum ScanDiagnostics {
+    static func logFirstFailure(_ failures: [AppCatalogScanner.Failure]) {
+        guard let first = failures.first else { return }
+        let extra = failures.count > 1 ? " (+\(failures.count - 1) more)" : ""
+        AppErrorLog.error("scan failed stage=\(first.stage.rawValue) path=\(first.path.standardizedFileURL.path)\(extra)",
+                          category: "catalog", error: first.error)
+    }
 }
 
 private enum AppSearch {

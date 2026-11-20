@@ -192,6 +192,13 @@ func runSmokeTests() async {
         try checkLayout("arbitrary icon merge preserves all apps")
         store.resetLayout()
         try check(store.errorMessage == nil, "no catalog or persistence errors")
+        let missingAppURL = directory.appendingPathComponent("Missing Test.app")
+        store.launch(LauncherApp(id: missingAppURL.path, name: "Missing Test",
+                                 url: missingAppURL, bundleIdentifier: "test.missing"))
+        let errorLog = (try? String(contentsOf: AppPaths.errorLogURL, encoding: .utf8)) ?? ""
+        try check(errorLog.contains("category=launch") && errorLog.contains("Missing Test"),
+                  "runtime errors are written to the error log")
+        store.errorMessage = nil
         let retainedIcon = store.apps[0].icon
         LauncherIconCache.removeAll()
         let rebuiltIcon = store.apps[0].icon

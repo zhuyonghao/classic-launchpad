@@ -438,6 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let message = "\(shortcutPreferences.shortcut.displayName) 无法注册，可能已被占用。请从菜单栏选择“自定义打开快捷键…”更换组合。"
                 shortcutRegistrationError = message
                 store.errorMessage = message
+                AppErrorLog.error("failed to register opening shortcut: \(shortcutPreferences.shortcut.displayName)", category: "shortcut")
             }
             configureTrackpadGestures()
         }
@@ -774,7 +775,10 @@ final class GlobalHotKey {
             DispatchQueue.main.async { [weak hotKey] in hotKey?.action() }
             return noErr
         }, 1, &eventType, context, &handler)
-        guard handlerStatus == noErr else { return }
+        guard handlerStatus == noErr else {
+            AppErrorLog.error("InstallEventHandler failed status=\(handlerStatus)", category: "shortcut")
+            return
+        }
         _ = replace(with: shortcut)
     }
 
@@ -784,13 +788,24 @@ final class GlobalHotKey {
     /// leaves the working shortcut available and the saved preference untouched.
     @discardableResult
     func replace(with shortcut: LauncherShortcut) -> Bool {
-        guard handler != nil, shortcut.isValid else { return false }
+        guard shortcut.isValid else {
+            AppErrorLog.error("cannot register invalid opening shortcut", category: "shortcut")
+            return false
+        }
+        guard handler != nil else { return false }
         if registered && self.shortcut == shortcut { return true }
-        guard !isSystemShortcut(shortcut) else { return false }
+        guard !isSystemShortcut(shortcut) else {
+            AppErrorLog.error("opening shortcut conflicts with a system shortcut: \(shortcut.displayName)", category: "shortcut")
+            return false
+        }
         var replacement: EventHotKeyRef?
         let identifier = EventHotKeyID(signature: 0x4C504144, id: 1)
-        guard RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, identifier,
-                                  GetApplicationEventTarget(), OptionBits(kEventHotKeyExclusive), &replacement) == noErr else { return false }
+        let status = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers, identifier,
+                                         GetApplicationEventTarget(), OptionBits(kEventHotKeyExclusive), &replacement)
+        guard status == noErr else {
+            AppErrorLog.error("RegisterEventHotKey failed status=\(status) shortcut=\(shortcut.displayName)", category: "shortcut")
+            return false
+        }
         if let reference { UnregisterEventHotKey(reference) }
         reference = replacement
         self.shortcut = shortcut
